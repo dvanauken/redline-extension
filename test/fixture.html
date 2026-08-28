@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Redline fixture</title>
+<style>
+  /* Hostile page styles: these must NOT reach the overlay. */
+  * { box-sizing: content-box !important; }
+  button, select, textarea { font-size: 44px !important; background: lime !important;
+    color: magenta !important; padding: 30px !important; border: 8px dashed red !important; }
+  div { color: magenta; font-family: "Comic Sans MS"; }
+  dialog { position: static !important; }
+  body { margin: 0; font-size: 30px; }
+  #tall { height: 3000px; background: linear-gradient(#fff, #ccd); }
+</style>
+<body>
+  <h1 id="heading">Fixture page</h1>
+  <button id="page-button">Page button</button>
+  <div id="tall">scroll region</div>
+</body>

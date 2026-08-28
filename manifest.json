@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Redline",
+  "version": "0.1.0",
+  "description": "Annotate any web page with pen, arrow, box, numbered note, and text marks, then export an annotated PNG or portable JSON.",
+  "permissions": ["activeTab", "scripting", "clipboardWrite"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Redline this page (Ctrl+Shift+R)"
+  },
+  "commands": {
+    "toggle-redline": {
+      "suggested_key": { "default": "Ctrl+Shift+R" },
+      "description": "Toggle the Redline overlay"
+    }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "main.js",
+        "host-dialogs.js",
+        "color-picker.js",
+        "redline/*",
+        "redline/vendor/wb/*",
+        "redline/vendor/wb/wb-color-picker/*"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
