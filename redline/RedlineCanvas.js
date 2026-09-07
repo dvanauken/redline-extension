@@ -74,8 +74,21 @@ export function drawRedlineAnnotations(ctx, annotations, {
     ctx.fillStyle = mark.color;
     ctx.lineWidth = mark.width;
 
-    if (mark.type === 'pen') {
+    if (['pen', 'brush', 'polyline', 'polygon'].includes(mark.type)) {
+      const alpha = mark.opacity ?? (mark.type === 'brush' ? 0.35 : 1);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      if (mark.type === 'brush') {
+        ctx.lineWidth = Math.max(mark.width * 4, 6);
+      }
       line(ctx, mark.points);
+      if (mark.type === 'polygon' && mark.points.length > 1) {
+        ctx.lineTo(mark.points[0].x, mark.points[0].y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    } else if (mark.type === 'line') {
+      line(ctx, [mark.start, mark.end]);
     } else if (mark.type === 'arrow') {
       arrow(ctx, mark.start, mark.end, mark.width);
     } else if (mark.type === 'rectangle') {

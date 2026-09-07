@@ -30,6 +30,9 @@
 
 [data-redline-canvas][data-tool="select"] { cursor: default; }
 [data-redline-canvas][data-tool="select"] [data-redline-id] { cursor: move; }
+[data-redline-canvas][data-tool="brush"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 24 24'%3E%3Cpath d='m9 11-6 6v3h9l3-3' fill='%23f4c542' stroke='%23111827' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4' fill='%23f4c542' stroke='%23111827' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 3 21, crosshair;
+}
 
 [data-redline-id] > polyline,
 [data-redline-id] > line,
@@ -158,6 +161,44 @@
   white-space: nowrap;
 }
 
+[data-redline-toolbar][data-pinned] {
+  left: 10px;
+  transform: none;
+}
+
+[data-redline-toolbar][data-positioned] {
+  right: auto;
+  transform: none;
+}
+
+[data-redline-grip] {
+  flex: 0 0 auto;
+  cursor: grab !important;
+  touch-action: none;
+}
+
+[data-redline-grip]:active { cursor: grabbing !important; }
+
+[data-redline-shape-menu] {
+  position: relative;
+  display: inline-flex;
+}
+
+[data-redline-shape-menu] summary {
+  min-height: 31px;
+  padding: 7px 8px;
+  color: #e2e8f0;
+  background: #1e293b;
+  border: 1px solid #475569;
+  border-radius: 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+[data-redline-shape-menu] summary::-webkit-details-marker { display: none; }
+[data-redline-shape-menu][open] summary { color: #fff; background: #754850; border-color: #ad747c; }
+[data-redline-shape-menu] button { margin-left: 4px; }
+
 [data-redline-title] {
   margin: 0 5px 0 2px;
   color: #cbd5e1;
@@ -167,6 +208,8 @@
 }
 
 [data-redline-toolbar] button {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
   min-width: 34px;
   min-height: 31px;
@@ -178,6 +221,25 @@
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+[data-redline-toolbar] button svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+  stroke: currentColor;
+  fill: none;
+}
+
+[data-redline-toolbar] button img {
+  width: 16px;
+  height: 16px;
+  display: block;
+  pointer-events: none;
+}
+
+[data-redline-toolbar] button svg {
+  flex: 0 0 16px;
 }
 
 [data-redline-toolbar] button:hover:not(:disabled),

@@ -1,5 +1,6 @@
 import { RedlineDocument, cryptoId, translateAnnotation } from './RedlineDocument.js';
 import { drawRedlineAnnotations, redlineTextBoxFill } from './RedlineCanvas.js';
+import { appendIcon } from './icons.js';
 import './vendor/wb/wb-color-picker/wb-color-picker.define.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -23,9 +24,15 @@ const TEXTBOX_OPACITIES = [
   ['25% opacity', 0.25],
   ['Transparent', 0],
 ];
+const BRUSH_OPACITIES = [['20%', 0.2], ['35%', 0.35], ['50%', 0.5], ['65%', 0.65]];
 const TOOL_LABELS = {
   select: 'Select',
   pen: 'Pen',
+  brush: 'Highlighter',
+  line: 'Line',
+  polyline: 'Polyline',
+  polygon: 'Polygon',
+  eraser: 'Eraser',
   arrow: 'Arrow',
   rectangle: 'Box',
   note: 'Note',
@@ -47,12 +54,13 @@ function distance(a, b) {
 }
 
 function annotationBounds(mark) {
-  if (mark.type === 'pen') {
+  if (['pen', 'brush', 'polyline', 'polygon'].includes(mark.type) && Array.isArray(mark.points) && mark.points.length) {
     const xs = mark.points.map(p => p.x);
     const ys = mark.points.map(p => p.y);
     return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
   }
-  if (mark.type === 'note') return { x: mark.point.x - 16, y: mark.point.y - 18, width: 220, height: 38 };
+  if (mark.type === 'note' && mark.point) return { x: mark.point.x - 16, y: mark.point.y - 18, width: 220, height: 38 };
+  if (!mark.start || !mark.end) return { x: 0, y: 0, width: 0, height: 0 };
   return {
     x: Math.min(mark.start.x, mark.end.x),
     y: Math.min(mark.start.y, mark.end.y),
@@ -194,6 +202,9 @@ export class RedlineOverlay {
     captureFallback = null,
     requestText = async () => null,
     confirmClear = async () => false,
+    // [extension patch] Persistence belongs to the host, never to the page's storage.
+    preferences = {},
+    savePreferences = async () => {},
     // [extension patch] Hosts without a custom-element registry (a Chrome
     // content script, for one) supply their own colour control here.
     createColorPicker = () => document.createElement('wb-color-picker'),
@@ -210,7 +221,7 @@ export class RedlineOverlay {
   } = {}) {
     this.options = {
       mount, getContext, setStatus, capturePage, captureFallback,
-      requestText, confirmClear, createColorPicker, describePage,
+      requestText, confirmClear, createColorPicker, describePage, savePreferences,
     };
     this.active = false;
     this.tool = 'pen';
@@ -221,6 +232,7 @@ export class RedlineOverlay {
     this.document = null;
     this.sessionStartedAt = null;
     this._draft = null;
+    this._draftElement = null;
     this._drag = null;
     this._resize = null;
     this._liveAnnotation = null;
@@ -230,15 +242,25 @@ export class RedlineOverlay {
     this._dialogDepth = 0;
     this._colorDialogResolve = null;
     this._pendingColor = this.color;
+    this.toolbarPinned = false;
+    this.toolbarPosition = null;
+    this._toolbarDrag = null;
+    this.brushWidth = 10;
+    this.brushOpacity = 0.35;
+    this._preferenceSave = Promise.resolve();
+    this._loadPreferences(preferences);
     this._buildDOM();
 
     this._boundKeyDown = event => this._onKeyDown(event);
     this._boundResize = () => {
       this._syncViewport();
+      this._applyToolbarPosition();
       this._positionTextEditor();
       if (this.colorDialog?.open) this._positionColorDialog();
     };
-    window.addEventListener('keydown', this._boundKeyDown, true);
+    // Closed shadow roots hide their event path from window-level listeners.
+    this._keyTarget = this.root.getRootNode();
+    this._keyTarget.addEventListener('keydown', this._boundKeyDown, true);
     window.addEventListener('resize', this._boundResize);
   }
 
@@ -247,7 +269,7 @@ export class RedlineOverlay {
 
   destroy() {
     this._finishTextBoxEditing({ commit: false });
-    window.removeEventListener('keydown', this._boundKeyDown, true);
+    this._keyTarget.removeEventListener('keydown', this._boundKeyDown, true);
     window.removeEventListener('resize', this._boundResize);
     if (this.colorDialog.open) this.colorDialog.close('cancel');
     if (this.root.open) this.root.close();
@@ -310,6 +332,7 @@ export class RedlineOverlay {
     if (!Object.hasOwn(TOOL_LABELS, tool)) return;
     if (this._textEditor && tool !== this.tool) this._finishTextBoxEditing({ commit: true });
     this.tool = tool;
+    this._savePreferences();
     this.svg.dataset.tool = tool;
     for (const button of this.toolbar.querySelectorAll('[data-redline-tool]')) {
       const selected = button.dataset.redlineTool === tool;
@@ -358,6 +381,13 @@ export class RedlineOverlay {
     }
     if (!this.document) this.document = new RedlineDocument();
     this.document.load(data.document);
+    this._finishTextBoxEditing({ commit: false });
+    this._draft = null;
+    this._draftElement = null;
+    this._drag = null;
+    this._resize = null;
+    this._liveAnnotation = null;
+    this._syncViewport();
     this.sessionStartedAt = data.createdAt ?? new Date().toISOString();
     this.selectedId = null;
     this._render();
@@ -460,6 +490,8 @@ export class RedlineOverlay {
       'data-redline-canvas': '',
       'aria-label': 'Redline drawing surface',
       role: 'img',
+      // Match the independent X/Y scaling used by the editor and PNG export.
+      preserveAspectRatio: 'none',
     });
     this.marksLayer = svgElement('g', { 'data-redline-marks': '' });
     this.svg.appendChild(this.marksLayer);
@@ -470,24 +502,50 @@ export class RedlineOverlay {
     this.toolbar.setAttribute('role', 'toolbar');
     this.toolbar.setAttribute('aria-label', 'Redline tools');
 
+    this.grip = this._button('', 'Drag to move toolbar', 'grip');
+    this.grip.dataset.redlineGrip = '';
+    this.grip.setAttribute('aria-label', 'Move toolbar');
+    this.toolbar.appendChild(this.grip);
+
     const title = document.createElement('strong');
     title.textContent = 'Redline';
     title.dataset.redlineTitle = '';
     this.toolbar.appendChild(title);
 
     const toolButtons = [
-      ['select', '↖', 'Select and move marks (V)'],
-      ['pen', '✎', 'Freehand pen (P)'],
-      ['arrow', '➜', 'Arrow (A)'],
-      ['rectangle', '□', 'Rectangle (R)'],
-      ['note', '①', 'Numbered note (N)'],
-      ['textbox', 'T', 'Text box — drag to size (T)'],
+      ['select', 'Select and move marks (V)'],
+      ['pen', 'Freehand pen (P)'],
+      ['brush', 'Highlight / brush (B)'],
+      ['line', 'Line (L)'],
+      ['arrow', 'Arrow (A)'],
+      ['rectangle', 'Rectangle (R)'],
+      ['note', 'Numbered note (N)'],
+      ['textbox', 'Text box — drag to size (T)'],
     ];
-    for (const [tool, icon, titleText] of toolButtons) {
-      const button = this._button(icon, titleText);
+    for (const [tool, titleText] of toolButtons) {
+      const button = this._button('', titleText);
       button.dataset.redlineTool = tool;
+      appendIcon(button, tool);
       this.toolbar.appendChild(button);
     }
+
+    const shapeMenu = document.createElement('details');
+    shapeMenu.dataset.redlineShapeMenu = '';
+    const shapeSummary = document.createElement('summary');
+    shapeSummary.textContent = 'Paths';
+    shapeSummary.title = 'More path tools';
+    shapeMenu.appendChild(shapeSummary);
+    for (const [tool, titleText] of [['polyline', 'Polyline — click points, Enter to finish'], ['polygon', 'Polygon — click points, Enter to finish']]) {
+      const button = this._button('', titleText);
+      button.dataset.redlineTool = tool;
+      appendIcon(button, tool);
+      shapeMenu.appendChild(button);
+    }
+    const eraserButton = this._button('', 'Erase the mark nearest the click (E)');
+    eraserButton.dataset.redlineTool = 'eraser';
+    appendIcon(eraserButton, 'eraser');
+    shapeMenu.appendChild(eraserButton);
+    this.toolbar.appendChild(shapeMenu);
 
     this.colorButton = this._button('', 'Choose annotation color', 'color');
     this.colorButton.dataset.redlineColor = '';
@@ -516,6 +574,7 @@ export class RedlineOverlay {
     this.widthSelect.value = String(this.width);
     this.widthSelect.addEventListener('change', () => {
       this.width = Number(this.widthSelect.value);
+      this._savePreferences();
       const selected = this.document?.annotations.find(mark => mark.id === this.selectedId);
       if (!selected || selected.width === this.width) return;
       this.document.replace(selected.id, { ...selected, width: this.width });
@@ -523,6 +582,41 @@ export class RedlineOverlay {
     });
     widthLabel.appendChild(this.widthSelect);
     this.toolbar.appendChild(widthLabel);
+
+    const brushWidthLabel = document.createElement('label');
+    brushWidthLabel.dataset.redlineControl = '';
+    brushWidthLabel.title = 'Highlighter width';
+    brushWidthLabel.innerHTML = '<span>Brush</span>';
+    this.brushWidthSelect = document.createElement('select');
+    this.brushWidthSelect.setAttribute('aria-label', 'Brush width');
+    for (const [label, value] of LINE_WEIGHTS.map(([label, value]) => [label, Math.max(6, value * 3)])) {
+      const option = document.createElement('option');
+      option.value = String(value);
+      option.textContent = label;
+      this.brushWidthSelect.appendChild(option);
+    }
+    this.brushWidthSelect.value = String(this.brushWidth);
+    this.brushWidthSelect.addEventListener('change', () => {
+      this.brushWidth = Number(this.brushWidthSelect.value);
+      this._savePreferences();
+    });
+    brushWidthLabel.appendChild(this.brushWidthSelect);
+    this.toolbar.appendChild(brushWidthLabel);
+
+    this.brushOpacitySelect = document.createElement('select');
+    this.brushOpacitySelect.setAttribute('aria-label', 'Brush opacity');
+    for (const [label, value] of BRUSH_OPACITIES) {
+      const option = document.createElement('option');
+      option.value = String(value);
+      option.textContent = label;
+      this.brushOpacitySelect.appendChild(option);
+    }
+    this.brushOpacitySelect.value = String(this.brushOpacity);
+    this.brushOpacitySelect.addEventListener('change', () => {
+      this.brushOpacity = Number(this.brushOpacitySelect.value);
+      this._savePreferences();
+    });
+    brushWidthLabel.appendChild(this.brushOpacitySelect);
 
     const fillLabel = document.createElement('label');
     fillLabel.dataset.redlineControl = '';
@@ -539,6 +633,7 @@ export class RedlineOverlay {
     this.fillOpacitySelect.value = String(this.textBoxBackgroundOpacity);
     this.fillOpacitySelect.addEventListener('change', () => {
       this.textBoxBackgroundOpacity = Number(this.fillOpacitySelect.value);
+      this._savePreferences();
       const selected = this.document?.annotations.find(mark => mark.id === this.selectedId);
       if (selected?.type !== 'textbox' || selected.backgroundOpacity === this.textBoxBackgroundOpacity) return;
       this.document.replace(selected.id, {
@@ -550,15 +645,21 @@ export class RedlineOverlay {
     fillLabel.appendChild(this.fillOpacitySelect);
     this.toolbar.appendChild(fillLabel);
 
-    this.undoButton = this._button('↶', 'Undo mark (Ctrl+Z)', 'undo');
-    this.redoButton = this._button('↷', 'Redo mark (Ctrl+Y)', 'redo');
-    this.deleteButton = this._button('⌫', 'Delete selected mark (Delete)', 'delete');
+    this.undoButton = appendIcon(this._button('', 'Undo mark (Ctrl+Z)', 'undo'), 'undo');
+    this.redoButton = appendIcon(this._button('', 'Redo mark (Ctrl+Y)', 'redo'), 'redo');
+    this.deleteButton = appendIcon(this._button('', 'Delete selected mark (Delete)', 'delete'), 'delete');
     this.clearButton = this._button('Clear', 'Clear all marks', 'clear');
     this.importButton = this._button('Open', 'Import editable annotation data', 'import');
     this.jsonButton = this._button('JSON', 'Download editable annotation data', 'json');
-    this.copyButton = this._button('Copy', 'Copy annotated screenshot', 'copy');
-    this.downloadButton = this._button('PNG', 'Download annotated screenshot', 'download');
-    this.closeButton = this._button('×', 'Close redline mode (Esc)', 'close');
+    this.copyButton = appendIcon(this._button('Copy', 'Copy annotated screenshot', 'copy'), 'copy');
+    this.downloadButton = appendIcon(this._button('PNG', 'Download annotated screenshot', 'download'), 'download');
+    this.closeButton = appendIcon(this._button('', 'Close redline mode (Esc)', 'close'), 'close');
+    this.pinButton = appendIcon(this._button('', 'Pin toolbar to the top-left', 'pin'), 'pin');
+    this.pinButton.dataset.redlinePin = '';
+    this.pinButton.setAttribute('aria-pressed', 'false');
+    this.toolbar.appendChild(this.pinButton);
+    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
+    this.pinButton.setAttribute('aria-pressed', String(this.toolbarPinned));
     this.closeButton.dataset.redlineClose = '';
     for (const button of [this.undoButton, this.redoButton, this.deleteButton, this.clearButton, this.importButton, this.jsonButton, this.copyButton, this.downloadButton, this.closeButton]) {
       this.toolbar.appendChild(button);
@@ -578,6 +679,7 @@ export class RedlineOverlay {
     this.message.setAttribute('role', 'status');
     this.message.setAttribute('aria-live', 'polite');
     this.toolbar.appendChild(this.message);
+    this._applyToolbarPosition();
 
     this.root.appendChild(this.toolbar);
     this.options.mount.appendChild(this.root);
@@ -601,6 +703,10 @@ export class RedlineOverlay {
       this._finishTextBoxEditing({ commit: true });
     }, true);
     this.toolbar.addEventListener('click', event => this._onToolbarClick(event));
+    this.grip.addEventListener('pointerdown', event => this._onToolbarPointerDown(event));
+    this.grip.addEventListener('pointermove', event => this._onToolbarPointerMove(event));
+    this.grip.addEventListener('pointerup', event => this._onToolbarPointerUp(event));
+    this.grip.addEventListener('pointercancel', event => this._onToolbarPointerUp(event, true));
     this.root.addEventListener('cancel', event => {
       event.preventDefault();
       this.close();
@@ -676,6 +782,7 @@ export class RedlineOverlay {
     if (!nextColor || !this.active) return false;
 
     this.color = nextColor;
+    this._savePreferences();
     this._syncColorButton();
     if (!selected || selected.color.toUpperCase() === nextColor.toUpperCase()) return true;
     this.document.replace(selected.id, { ...selected, color: nextColor });
@@ -733,11 +840,9 @@ export class RedlineOverlay {
   }
 
   _point(event) {
-    const rect = this.svg.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) * this.document.width / Math.max(1, rect.width),
-      y: (event.clientY - rect.top) * this.document.height / Math.max(1, rect.height),
-    };
+    const point = new DOMPoint(event.clientX, event.clientY)
+      .matrixTransform(this.svg.getScreenCTM().inverse());
+    return { x: point.x, y: point.y };
   }
 
   _startTextBoxEditing(mark, { creating = false } = {}) {
@@ -861,6 +966,66 @@ export class RedlineOverlay {
     return this.document.annotations.reduce((max, mark) => mark.type === 'note' ? Math.max(max, mark.number) : max, 0) + 1;
   }
 
+  _loadPreferences(saved) {
+    if (saved && typeof saved === 'object') {
+      if (Object.hasOwn(TOOL_LABELS, saved.tool)) this.tool = saved.tool;
+      if (/^#[0-9a-f]{6}$/i.test(saved.color)) this.color = saved.color;
+      if (Number.isFinite(saved.width) && saved.width >= 1 / 3) this.width = saved.width;
+      if (Number.isFinite(saved.brushWidth) && saved.brushWidth > 0) this.brushWidth = saved.brushWidth;
+      if (Number.isFinite(saved.brushOpacity) && saved.brushOpacity >= 0 && saved.brushOpacity <= 1) this.brushOpacity = saved.brushOpacity;
+      if (Number.isFinite(saved.textBoxBackgroundOpacity) && saved.textBoxBackgroundOpacity >= 0 && saved.textBoxBackgroundOpacity <= 1) {
+        this.textBoxBackgroundOpacity = saved.textBoxBackgroundOpacity;
+      }
+      this.toolbarPinned = saved.toolbarPinned === true;
+      if (Number.isFinite(saved.toolbarPosition?.left) && Number.isFinite(saved.toolbarPosition?.top)) {
+        this.toolbarPosition = { left: saved.toolbarPosition.left, top: saved.toolbarPosition.top };
+      }
+    }
+  }
+
+  _savePreferences() {
+    const preferences = {
+      tool: this.tool, color: this.color, width: this.width,
+      brushWidth: this.brushWidth, brushOpacity: this.brushOpacity,
+      textBoxBackgroundOpacity: this.textBoxBackgroundOpacity,
+      toolbarPinned: this.toolbarPinned,
+      toolbarPosition: this.toolbarPosition ? { ...this.toolbarPosition } : null,
+    };
+    this._preferenceSave = this._preferenceSave
+      .then(() => this.options.savePreferences(preferences))
+      .catch(error => console.warn('[Redline] Could not save preferences.', error));
+  }
+
+  _eraseAt(point) {
+    const hit = [...(this.document?.annotations ?? [])].reverse().find(mark => {
+      const bounds = annotationBounds(mark);
+      return point.x >= bounds.x - 12 && point.x <= bounds.x + bounds.width + 12
+        && point.y >= bounds.y - 12 && point.y <= bounds.y + bounds.height + 12;
+    });
+    if (!hit) return false;
+    this.document.remove(hit.id);
+    this.selectedId = null;
+    this._render();
+    return true;
+  }
+
+  _finishPathDraft() {
+    if (!this._draft || !['polyline', 'polygon'].includes(this._draft.type)) return false;
+    const draft = this._draft;
+    this._draft = null;
+    this._draftElement = null;
+    delete draft.previewPoint;
+    if (draft.points.length < 2) {
+      this._render();
+      return false;
+    }
+    const mark = this.document.add(draft);
+    this.selectedId = mark.id;
+    this.setTool('select');
+    this._render();
+    return true;
+  }
+
   async _onPointerDown(event) {
     if (event.button !== 0 || !this.document) return;
     event.preventDefault();
@@ -895,8 +1060,23 @@ export class RedlineOverlay {
       return;
     }
 
-    this._draft = this.tool === 'pen'
-      ? { id: cryptoId(), type: 'pen', points: [point, point], color: this.color, width: this.width }
+    if (this.tool === 'eraser') {
+      this._eraseAt(point);
+      return;
+    }
+
+    if (this.tool === 'polyline' || this.tool === 'polygon') {
+      if (!this._draft) this._draft = {
+        id: cryptoId(), type: this.tool, points: [point], previewPoint: point,
+        color: this.color, width: this.width,
+      };
+      else this._draft.points.push(point);
+      this._render();
+      return;
+    }
+
+    this._draft = this.tool === 'pen' || this.tool === 'brush'
+      ? { id: cryptoId(), type: this.tool, points: [point, point], color: this.color, width: this.tool === 'brush' ? this.brushWidth : this.width, opacity: this.tool === 'brush' ? this.brushOpacity : 1 }
       : { id: cryptoId(), type: this.tool, start: point, end: point, color: this.color, width: this.width };
     this._render();
   }
@@ -924,8 +1104,18 @@ export class RedlineOverlay {
       return;
     }
     if (!this._draft) return;
-    if (this._draft.type === 'pen') {
-      if (distance(this._draft.points.at(-1), point) >= 2) this._draft.points.push(point);
+    if (this._draft.type === 'polyline' || this._draft.type === 'polygon') {
+      this._draft.previewPoint = point;
+      this._render();
+      return;
+    }
+    if (this._draft.type === 'pen' || this._draft.type === 'brush') {
+      if (distance(this._draft.points.at(-1), point) >= 2) {
+        this._draft.points.push(point);
+        if (this._draft.type === 'brush' && this._draftElement) {
+          this._draftElement.setAttribute('points', this._draft.points.map(item => `${item.x},${item.y}`).join(' '));
+        }
+      }
     } else {
       this._draft.end = point;
     }
@@ -959,9 +1149,11 @@ export class RedlineOverlay {
     }
 
     if (!this._draft) return;
+    if (this._draft.type === 'polyline' || this._draft.type === 'polygon') return;
     const draft = this._draft;
     this._draft = null;
-    const meaningful = draft.type === 'pen'
+    this._draftElement = null;
+    const meaningful = draft.type === 'pen' || draft.type === 'brush'
       ? draft.points.length > 2 || distance(draft.points[0], draft.points.at(-1)) >= 2
       : distance(draft.start, draft.end) >= 3;
     if (!cancelled && meaningful && draft.type === 'textbox') {
@@ -985,6 +1177,10 @@ export class RedlineOverlay {
   }
 
   async _onDoubleClick(event) {
+    if (this.tool === 'polyline' || this.tool === 'polygon') {
+      this._finishPathDraft();
+      return;
+    }
     if (this.tool !== 'select') return;
     const id = event.target.closest?.('[data-redline-id]')?.getAttribute('data-redline-id');
     const point = this._point(event);
@@ -1012,12 +1208,72 @@ export class RedlineOverlay {
     }
   }
 
+  _applyToolbarPosition() {
+    if (!this.toolbarPosition) {
+      this.toolbar.removeAttribute('data-positioned');
+      this.toolbar.style.removeProperty('left');
+      this.toolbar.style.removeProperty('top');
+      return;
+    }
+    this.toolbar.dataset.positioned = '';
+    this.toolbar.style.left = `${this.toolbarPosition.left}px`;
+    this.toolbar.style.top = `${this.toolbarPosition.top}px`;
+    this._clampToolbarPosition();
+  }
+
+  _clampToolbarPosition() {
+    if (!this.toolbarPosition || !this.toolbar.isConnected) return;
+    const gutter = 6;
+    const rect = this.toolbar.getBoundingClientRect();
+    const left = Math.min(Math.max(gutter, this.toolbarPosition.left), Math.max(gutter, window.innerWidth - rect.width - gutter));
+    const top = Math.min(Math.max(gutter, this.toolbarPosition.top), Math.max(gutter, window.innerHeight - rect.height - gutter));
+    this.toolbarPosition = { left, top };
+    this.toolbar.style.left = `${left}px`;
+    this.toolbar.style.top = `${top}px`;
+  }
+
+  _onToolbarPointerDown(event) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const rect = this.toolbar.getBoundingClientRect();
+    this._toolbarDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+    };
+    this.grip.setPointerCapture?.(event.pointerId);
+  }
+
+  _onToolbarPointerMove(event) {
+    if (this._toolbarDrag?.pointerId !== event.pointerId) return;
+    this.toolbarPinned = false;
+    this.toolbarPosition = {
+      left: this._toolbarDrag.left + event.clientX - this._toolbarDrag.startX,
+      top: this._toolbarDrag.top + event.clientY - this._toolbarDrag.startY,
+    };
+    this._applyToolbarPosition();
+  }
+
+  _onToolbarPointerUp(event, cancelled = false) {
+    if (this._toolbarDrag?.pointerId !== event.pointerId) return;
+    this.grip.releasePointerCapture?.(event.pointerId);
+    if (cancelled) this.toolbarPosition = null;
+    else this._clampToolbarPosition();
+    this._toolbarDrag = null;
+    this._savePreferences();
+    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
+    this.pinButton?.setAttribute('aria-pressed', String(this.toolbarPinned));
+  }
+
   _onToolbarClick(event) {
     const tool = event.target.closest('[data-redline-tool]')?.dataset.redlineTool;
     if (tool) return this.setTool(tool);
     const action = event.target.closest('[data-redline-action]')?.dataset.redlineAction;
     if (!action) return;
     const actions = {
+      pin: () => this._toggleToolbarPin(),
       undo: () => this.undo(),
       redo: () => this.redo(),
       delete: () => this.removeSelected(),
@@ -1032,21 +1288,38 @@ export class RedlineOverlay {
     actions[action]?.();
   }
 
+  _toggleToolbarPin() {
+    this.toolbarPinned = !this.toolbarPinned;
+    if (this.toolbarPinned) this.toolbarPosition = null;
+    this._savePreferences();
+    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
+    this._applyToolbarPosition();
+    this.pinButton?.setAttribute('aria-pressed', String(this.toolbarPinned));
+    if (this.pinButton) this.pinButton.title = this.toolbarPinned
+      ? 'Unpin toolbar from the top-left'
+      : 'Pin toolbar to the top-left';
+  }
+
   _onKeyDown(event) {
     if (!this.active || this._dialogDepth > 0) return;
-    // [extension patch] This listener is on window, so when the overlay lives
-    // in a shadow root every event retargets to the shadow host and
-    // event.target is never the textarea. composedPath()[0] is the element the
-    // user is actually typing in. Without this, letters that double as tool
-    // shortcuts (v p a r n t) are swallowed instead of typed.
+    // [extension patch] Listen inside the root and inspect the original target,
+    // including when that root is closed to the surrounding page.
     const target = event.composedPath?.()[0] ?? event.target;
     if (target === this._textEditor?.element) return;
     // Let the native modal dialog dispatch its cancel event for Escape.
     if (event.key === 'Escape') return;
+    if (event.key === 'Enter' && this._draft && ['polyline', 'polygon'].includes(this._draft.type)) {
+      this._finishPathDraft();
+      event.preventDefault();
+      return;
+    }
     // Chromium may move reverse-Tab from the first control into browser chrome
     // even for a modal dialog. Keep the toolbar's keyboard loop deterministic.
     if (event.key === 'Tab') {
-      const focusable = [...this.toolbar.querySelectorAll('button:not(:disabled), input:not([hidden]):not(:disabled)')];
+      const focusable = [...this.toolbar.querySelectorAll('button, input, select, summary, [tabindex]')]
+        .filter(element => element.tabIndex >= 0 && !element.matches(':disabled')
+          && !element.closest('[hidden], [inert]')
+          && element.checkVisibility({ visibilityProperty: true }));
       if (focusable.length) {
         // [extension patch] shadow-aware: document.activeElement is the host, not the button.
         const index = focusable.indexOf(this.root.getRootNode().activeElement);
@@ -1067,7 +1340,7 @@ export class RedlineOverlay {
     else if (ctrl && event.key.toLowerCase() === 'y') this.redo();
     else if (!editable && (event.key === 'Delete' || event.key === 'Backspace')) this.removeSelected();
     else if (!editable && !ctrl && !event.altKey) {
-      const tool = { v: 'select', p: 'pen', a: 'arrow', r: 'rectangle', n: 'note', t: 'textbox' }[event.key.toLowerCase()];
+      const tool = { v: 'select', p: 'pen', b: 'brush', e: 'eraser', l: 'line', a: 'arrow', r: 'rectangle', n: 'note', t: 'textbox' }[event.key.toLowerCase()];
       if (tool) this.setTool(tool);
       else handled = false;
     } else handled = false;
@@ -1109,9 +1382,20 @@ export class RedlineOverlay {
     if (mark.id === this.selectedId && !isActivelyEditing) group.setAttribute('data-selected', '');
     const common = { fill: 'none', stroke: mark.color, 'stroke-width': mark.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
 
-    if (mark.type === 'pen') {
-      const points = mark.points.map(point => `${point.x},${point.y}`).join(' ');
-      group.appendChild(svgElement('polyline', { ...common, points }));
+    if (['pen', 'brush', 'polyline', 'polygon'].includes(mark.type)) {
+      const renderPoints = mark.previewPoint ? [...mark.points, mark.previewPoint] : mark.points;
+      const points = renderPoints.map(point => `${point.x},${point.y}`).join(' ');
+      const style = mark.type === 'brush'
+        ? { ...common, 'stroke-opacity': mark.opacity ?? 0.35, 'stroke-width': Math.max(mark.width * 4, 6) }
+        : common;
+      const polyline = svgElement('polyline', { ...style, points });
+      group.appendChild(polyline);
+      if (mark === this._draft) this._draftElement = polyline;
+      if (mark.type === 'polygon' && renderPoints.length > 1) {
+        group.appendChild(svgElement('line', { ...style, x1: renderPoints.at(-1).x, y1: renderPoints.at(-1).y, x2: renderPoints[0].x, y2: renderPoints[0].y }));
+      }
+    } else if (mark.type === 'line') {
+      group.appendChild(svgElement('line', { ...common, x1: mark.start.x, y1: mark.start.y, x2: mark.end.x, y2: mark.end.y }));
     } else if (mark.type === 'arrow') {
       group.appendChild(svgElement('line', { ...common, x1: mark.start.x, y1: mark.start.y, x2: mark.end.x, y2: mark.end.y }));
       const angle = Math.atan2(mark.end.y - mark.start.y, mark.end.x - mark.start.x);
@@ -1218,13 +1502,14 @@ export class RedlineOverlay {
     this.deleteButton.disabled = !this.selectedId;
     this.clearButton.disabled = count === 0;
     this.importButton.disabled = false;
-    this.jsonButton.disabled = count === 0;
-    this.copyButton.disabled = count === 0;
-    this.downloadButton.disabled = count === 0;
+    this.jsonButton.disabled = false;
+    this.copyButton.disabled = false;
+    this.downloadButton.disabled = false;
     this._setMessage(`${count} mark${count === 1 ? '' : 's'}`);
   }
 
   _setBusy(busy, message = '') {
+    if (busy) this._busyFocus = this.root.getRootNode().activeElement;
     for (const button of this.toolbar.querySelectorAll('button')) button.disabled = busy;
     this.toolbar.toggleAttribute('data-busy', busy);
     if (message) this._setMessage(message);
@@ -1235,9 +1520,15 @@ export class RedlineOverlay {
       this.deleteButton.disabled = !this.selectedId;
       this.clearButton.disabled = count === 0;
       this.importButton.disabled = false;
-      this.jsonButton.disabled = count === 0;
-      this.copyButton.disabled = count === 0;
-      this.downloadButton.disabled = count === 0;
+      this.jsonButton.disabled = false;
+      this.copyButton.disabled = false;
+      this.downloadButton.disabled = false;
+      if (this.active) {
+        const focus = this._busyFocus?.isConnected && !this._busyFocus.disabled
+          ? this._busyFocus : this.toolbar.querySelector('[data-redline-tool][data-active]');
+        focus?.focus({ preventScroll: true });
+      }
+      this._busyFocus = null;
     }
   }
 

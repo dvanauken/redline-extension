@@ -3,7 +3,7 @@
   "name": "Redline",
   "version": "0.1.0",
   "description": "Annotate any web page with pen, arrow, box, numbered note, and text marks, then export an annotated PNG or portable JSON.",
-  "permissions": ["activeTab", "scripting", "clipboardWrite"],
+  "permissions": ["activeTab", "scripting", "clipboardWrite", "storage"],
   "background": {
     "service_worker": "service-worker.js"
   },

@@ -14,6 +14,7 @@ import { HostDialogs, HOST_DIALOG_CSS } from './host-dialogs.js';
 import { createColorPicker, COLOR_PICKER_CSS } from './color-picker.js';
 
 const CAPTURE_MESSAGE = 'redline:capture';
+const PREFERENCES_KEY = 'redline.preferences';
 
 /**
  * Base styles for the shadow root.
@@ -150,7 +151,7 @@ function createToast(shadow) {
 async function install() {
   const host = document.createElement('div');
   host.dataset.redlineExtension = '';
-  const shadow = host.attachShadow({ mode: 'open' });
+  const shadow = host.attachShadow({ mode: 'closed' });
 
   const [baseSheet, redlineSheet, dialogSheet] = await Promise.all([
     loadStyleSheet(BASE_CSS),
@@ -169,6 +170,12 @@ async function install() {
 
   const dialogs = new HostDialogs(shadow);
   const setStatus = createToast(shadow);
+  let preferences = {};
+  try {
+    preferences = (await chrome.storage.local.get(PREFERENCES_KEY))[PREFERENCES_KEY] ?? {};
+  } catch (error) {
+    console.warn('[Redline] Could not load preferences.', error);
+  }
 
   const overlay = new RedlineOverlay({
     mount: shadow,
@@ -177,6 +184,8 @@ async function install() {
     setStatus,
     capturePage,
     createColorPicker,
+    preferences,
+    savePreferences: value => chrome.storage.local.set({ [PREFERENCES_KEY]: value }),
     requestText: (text, context) => dialogs.requestText(text, context),
     confirmClear: count => dialogs.confirm({
       title: 'Clear redline marks?',

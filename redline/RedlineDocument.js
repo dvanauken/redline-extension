@@ -6,7 +6,7 @@
  * from the editor, a bookmarklet, or a browser-extension host.
  */
 
-const VALID_TYPES = new Set(['pen', 'arrow', 'rectangle', 'note', 'textbox']);
+const VALID_TYPES = new Set(['pen', 'brush', 'line', 'polyline', 'polygon', 'arrow', 'rectangle', 'note', 'textbox']);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -36,12 +36,13 @@ export function sanitizeAnnotation(annotation) {
     width: Math.max(1 / 3, finiteNumber(annotation.width, 4 / 3)),
   };
 
-  if (annotation.type === 'pen') {
+  if (['pen', 'brush', 'polyline', 'polygon'].includes(annotation.type)) {
     const points = Array.isArray(annotation.points)
       ? annotation.points.map(sanitizePoint)
       : [];
-    if (points.length < 2) throw new TypeError('A pen annotation requires at least two points.');
-    return { ...base, points };
+    if (points.length < 2) throw new TypeError('A path annotation requires at least two points.');
+    const opacity = Math.min(1, Math.max(0, finiteNumber(annotation.opacity, annotation.type === 'brush' ? 0.35 : 1)));
+    return { ...base, points, opacity };
   }
 
   if (annotation.type === 'note') {
@@ -79,11 +80,22 @@ export function cryptoId() {
   return `redline-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function sanitizeAnnotations(annotations) {
+  if (!Array.isArray(annotations)) throw new TypeError('Annotations must be an array.');
+  const clean = annotations.map(sanitizeAnnotation);
+  const ids = new Set();
+  for (const mark of clean) {
+    if (ids.has(mark.id)) throw new TypeError('Duplicate redline annotation id: ' + mark.id);
+    ids.add(mark.id);
+  }
+  return clean;
+}
+
 export class RedlineDocument {
   constructor({ width = 1, height = 1, annotations = [] } = {}) {
     this.width = Math.max(1, finiteNumber(width, 1));
     this.height = Math.max(1, finiteNumber(height, 1));
-    this._annotations = annotations.map(sanitizeAnnotation);
+    this._annotations = sanitizeAnnotations(annotations);
     this._undo = [];
     this._redo = [];
   }
@@ -93,9 +105,10 @@ export class RedlineDocument {
   get canRedo() { return this._redo.length > 0; }
 
   _commit(next) {
+    const clean = sanitizeAnnotations(next);
     this._undo.push(clone(this._annotations));
     this._redo.length = 0;
-    this._annotations = next.map(sanitizeAnnotation);
+    this._annotations = clean;
   }
 
   add(annotation) {
@@ -140,10 +153,19 @@ export class RedlineDocument {
   }
 
   /** Replace state without creating a history entry (used for import). */
-  load({ width = this.width, height = this.height, annotations = [] } = {}) {
-    this.width = Math.max(1, finiteNumber(width, this.width));
-    this.height = Math.max(1, finiteNumber(height, this.height));
-    this._annotations = annotations.map(sanitizeAnnotation);
+  load(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new TypeError('A redline document must be an object.');
+    }
+    const { width = this.width, height = this.height, annotations } = data;
+    if (!Number.isFinite(width) || width < 1 || !Number.isFinite(height) || height < 1) {
+      throw new TypeError('Document dimensions must be finite numbers of at least one pixel.');
+    }
+    // Validate the entire replacement before changing dimensions, marks or history.
+    const clean = sanitizeAnnotations(annotations);
+    this.width = width;
+    this.height = height;
+    this._annotations = clean;
     this._undo.length = 0;
     this._redo.length = 0;
   }
@@ -161,7 +183,7 @@ export class RedlineDocument {
 export function translateAnnotation(annotation, dx, dy) {
   const moved = clone(annotation);
   const movePoint = point => ({ x: point.x + dx, y: point.y + dy });
-  if (moved.type === 'pen') moved.points = moved.points.map(movePoint);
+  if (['pen', 'brush', 'polyline', 'polygon'].includes(moved.type)) moved.points = moved.points.map(movePoint);
   else if (moved.type === 'note') moved.point = movePoint(moved.point);
   else {
     moved.start = movePoint(moved.start);
