@@ -1,6 +1,8 @@
 import { RedlineDocument, cryptoId, translateAnnotation } from './RedlineDocument.js';
 import { drawRedlineAnnotations, redlineTextBoxFill } from './RedlineCanvas.js';
 import { appendIcon } from './icons.js';
+import { cropExportGeometry } from './RedlineCrop.js';
+import { RedlineCropView } from './RedlineCropView.js';
 import './vendor/wb/wb-color-picker/wb-color-picker.define.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -27,6 +29,7 @@ const TEXTBOX_OPACITIES = [
 const BRUSH_OPACITIES = [['20%', 0.2], ['35%', 0.35], ['50%', 0.5], ['65%', 0.65]];
 const TOOL_LABELS = {
   select: 'Select',
+  crop: 'Crop',
   pen: 'Pen',
   brush: 'Highlighter',
   line: 'Line',
@@ -224,7 +227,9 @@ export class RedlineOverlay {
       requestText, confirmClear, createColorPicker, describePage, savePreferences,
     };
     this.active = false;
+    this.pageMode = false;
     this.tool = 'pen';
+    this._toolBeforeCrop = 'select';
     this.color = DEFAULT_COLOR;
     this.width = 1 * PT_TO_CSS_PX;
     this.textBoxBackgroundOpacity = 1;
@@ -253,6 +258,7 @@ export class RedlineOverlay {
 
     this._boundKeyDown = event => this._onKeyDown(event);
     this._boundResize = () => {
+      this.cropView.cancel();
       this._syncViewport();
       this._applyToolbarPosition();
       this._positionTextEditor();
@@ -261,6 +267,14 @@ export class RedlineOverlay {
     // Closed shadow roots hide their event path from window-level listeners.
     this._keyTarget = this.root.getRootNode();
     this._keyTarget.addEventListener('keydown', this._boundKeyDown, true);
+    this._boundModeKeyDown = event => {
+      if (event.key !== 'F2' || event.ctrlKey || event.metaKey || event.altKey || event.shiftKey
+        || !this.active || this._dialogDepth > 0 || this._busy) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!event.repeat) this.setPageMode(!this.pageMode);
+    };
+    window.addEventListener('keydown', this._boundModeKeyDown, true);
     window.addEventListener('resize', this._boundResize);
   }
 
@@ -270,7 +284,9 @@ export class RedlineOverlay {
   destroy() {
     this._finishTextBoxEditing({ commit: false });
     this._keyTarget.removeEventListener('keydown', this._boundKeyDown, true);
+    window.removeEventListener('keydown', this._boundModeKeyDown, true);
     window.removeEventListener('resize', this._boundResize);
+    document.body.removeAttribute('data-redline-active');
     if (this.colorDialog.open) this.colorDialog.close('cancel');
     if (this.root.open) this.root.close();
     this.colorDialog.remove();
@@ -285,20 +301,24 @@ export class RedlineOverlay {
       this.selectedId = null;
     }
     this.active = true;
+    this.pageMode = false;
+    this.root.removeAttribute('data-page-mode');
     this._previousFocus = document.activeElement;
+    this._pageFocus = this._previousFocus;
     this.root.hidden = false;
     if (!this.root.open) this.root.showModal();
     document.body.setAttribute('data-redline-active', '');
     this._syncViewport();
     this.setTool(this.tool);
     this._render();
-    this.options.setStatus('Redline mode — draw anywhere; Esc closes without losing marks.');
+    this.options.setStatus('Annotation mode — F2 switches to the page; Esc closes without losing marks.');
     this._events.dispatchEvent(new CustomEvent('redline:opened'));
     this.toolbar.querySelector(`[data-redline-tool="${this.tool}"]`)?.focus();
   }
 
   close() {
     if (!this.active) return;
+    this.cropView.cancel();
     this._finishTextBoxEditing({ commit: true });
     this.active = false;
     if (this.root.open) this.root.close();
@@ -318,6 +338,46 @@ export class RedlineOverlay {
 
   toggle() { this.active ? this.close() : this.open(); }
 
+  /** Release modal input ownership while keeping a small toolbar on the page. */
+  setPageMode(enabled) {
+    if (!this.active || this._busy || this._dialogDepth > 0 || this.pageMode === enabled) return;
+    this.cropView.cancel();
+    this._finishTextBoxEditing({ commit: true });
+    this._draft = null;
+    this._draftElement = null;
+    this._drag = null;
+    this._resize = null;
+    this._liveAnnotation = null;
+    if (!enabled) this._pageFocus = document.activeElement;
+    this.pageMode = enabled;
+    this.root.close();
+    this.root.toggleAttribute('data-page-mode', enabled);
+    document.body.toggleAttribute('data-redline-active', !enabled);
+    if (enabled) this.root.show();
+    else this.root.showModal();
+    this._syncViewport();
+    this._render();
+    this._applyToolbarPosition();
+    if (enabled) (this._pageFocus ?? this._previousFocus)?.focus?.({ preventScroll: true });
+    else this.toolbar.querySelector('[data-redline-tool="' + this.tool + '"]')?.focus({ preventScroll: true });
+    this.options.setStatus(enabled
+      ? 'Page mode — click, type, and scroll normally. F2 resumes annotations.'
+      : 'Annotation mode — F2 switches to the page.');
+  }
+
+  _syncInteractionMode() {
+    this.modeButton.textContent = this.pageMode ? 'Annotate' : 'Page';
+    this.modeButton.title = this.pageMode ? 'Resume annotations (F2)' : 'Interact with page (F2)';
+    this.modeButton.setAttribute('aria-label', this.modeButton.title);
+    this.modeButton.setAttribute('aria-pressed', String(this.pageMode));
+    this.toolbar.setAttribute('aria-label', this.pageMode ? 'Redline paused — page mode' : 'Redline tools — annotation mode');
+    this.toolbar.querySelector('[data-redline-shape-menu]').inert = this.pageMode;
+    for (const control of this.toolbar.querySelectorAll('button, select, input')) {
+      if (this.pageMode && ![this.grip, this.modeButton, this.pinButton, this.closeButton].includes(control)) control.disabled = true;
+    }
+    if (this.pageMode) this._setMessage('Page mode · F2 to annotate');
+  }
+
   newSession() {
     this._finishTextBoxEditing({ commit: false });
     this.document = new RedlineDocument({ width: window.innerWidth, height: window.innerHeight });
@@ -331,6 +391,16 @@ export class RedlineOverlay {
   setTool(tool) {
     if (!Object.hasOwn(TOOL_LABELS, tool)) return;
     if (this._textEditor && tool !== this.tool) this._finishTextBoxEditing({ commit: true });
+    if (tool !== this.tool && (tool === 'crop' || this.tool === 'crop')) {
+      this.cropView.cancel();
+      this._draft = null;
+      this._draftElement = null;
+      this._drag = null;
+      this._resize = null;
+      this._liveAnnotation = null;
+      this.selectedId = null;
+      if (tool === 'crop') this._toolBeforeCrop = this.tool;
+    }
     this.tool = tool;
     this._savePreferences();
     this.svg.dataset.tool = tool;
@@ -340,6 +410,13 @@ export class RedlineOverlay {
       button.setAttribute('aria-pressed', String(selected));
     }
     this._setMessage(`${TOOL_LABELS[tool]} tool`);
+    this.cropView.sync(this.document, tool === 'crop');
+    if (tool === 'crop') this._render();
+  }
+
+  _finishCrop() {
+    this.setTool(this._toolBeforeCrop);
+    this.toolbar.querySelector('[data-redline-tool="' + this.tool + '"]')?.focus({ preventScroll: true });
   }
 
   undo() {
@@ -381,6 +458,7 @@ export class RedlineOverlay {
     }
     if (!this.document) this.document = new RedlineDocument();
     this.document.load(data.document);
+    this.cropView.cancel();
     this._finishTextBoxEditing({ commit: false });
     this._draft = null;
     this._draftElement = null;
@@ -428,16 +506,28 @@ export class RedlineOverlay {
 
   async captureAnnotatedImage() {
     if (!this.document) throw new Error('Open redline mode before capturing.');
+    this._finishTextBoxEditing({ commit: true });
+    const snapshot = this.document.toJSON();
     const capture = await this._captureBaseImage();
+    const { crop, source, width, height } = cropExportGeometry(snapshot, capture.canvas.width, capture.canvas.height);
+    if (width > 32767 || height > 32767 || width * height > 64_000_000) {
+      throw new Error('Output is too large. Choose a smaller crop or output scale.');
+    }
     const canvas = document.createElement('canvas');
-    canvas.width = capture.canvas.width;
-    canvas.height = capture.canvas.height;
+    canvas.width = width;
+    canvas.height = height;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(capture.canvas, 0, 0);
-    drawRedlineAnnotations(ctx, this.document.annotations, {
-      scaleX: canvas.width / this.document.width,
-      scaleY: canvas.height / this.document.height,
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(capture.canvas, source.x, source.y, source.width, source.height, 0, 0, width, height);
+    const scaleX = width / crop.width;
+    const scaleY = height / crop.height;
+    ctx.save();
+    ctx.translate(-crop.x * scaleX, -crop.y * scaleY);
+    drawRedlineAnnotations(ctx, snapshot.annotations, {
+      scaleX,
+      scaleY,
     });
+    ctx.restore();
     return { canvas, scope: capture.scope };
   }
 
@@ -497,15 +587,35 @@ export class RedlineOverlay {
     this.svg.appendChild(this.marksLayer);
     this.root.appendChild(this.svg);
 
+    this.cropView = new RedlineCropView(this.root, {
+      onChange: crop => {
+        this.document.setCrop(crop);
+        this._render();
+        if (this.cropView.panel.hidden) this.toolbar.querySelector('[data-redline-tool="crop"]')?.focus();
+      },
+      onScale: scale => {
+        this.document.setOutputScale(scale);
+        this.cropView.render();
+        if (this.cropView.panel.hidden) this.toolbar.querySelector('[data-redline-tool="crop"]')?.focus();
+      },
+      onDone: () => this._finishCrop(),
+      onEdit: () => this.setTool('crop'),
+    });
+
     this.toolbar = document.createElement('div');
     this.toolbar.dataset.redlineToolbar = '';
     this.toolbar.setAttribute('role', 'toolbar');
     this.toolbar.setAttribute('aria-label', 'Redline tools');
 
-    this.grip = this._button('', 'Drag to move toolbar', 'grip');
+    this.grip = appendIcon(this._button('', 'Drag to move toolbar', 'grip'), 'grip');
     this.grip.dataset.redlineGrip = '';
     this.grip.setAttribute('aria-label', 'Move toolbar');
     this.toolbar.appendChild(this.grip);
+
+    this.modeButton = this._button('Page', 'Interact with page (F2)', 'page-mode');
+    this.modeButton.dataset.redlineMode = '';
+    this.modeButton.setAttribute('aria-pressed', 'false');
+    this.toolbar.appendChild(this.modeButton);
 
     const title = document.createElement('strong');
     title.textContent = 'Redline';
@@ -521,6 +631,7 @@ export class RedlineOverlay {
       ['rectangle', 'Rectangle (R)'],
       ['note', 'Numbered note (N)'],
       ['textbox', 'Text box — drag to size (T)'],
+      ['crop', 'Crop screenshot — drag a region, resize with handles (C)'],
     ];
     for (const [tool, titleText] of toolButtons) {
       const button = this._button('', titleText);
@@ -656,10 +767,8 @@ export class RedlineOverlay {
     this.closeButton = appendIcon(this._button('', 'Close redline mode (Esc)', 'close'), 'close');
     this.pinButton = appendIcon(this._button('', 'Pin toolbar to the top-left', 'pin'), 'pin');
     this.pinButton.dataset.redlinePin = '';
-    this.pinButton.setAttribute('aria-pressed', 'false');
     this.toolbar.appendChild(this.pinButton);
-    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
-    this.pinButton.setAttribute('aria-pressed', String(this.toolbarPinned));
+    this._syncToolbarPin();
     this.closeButton.dataset.redlineClose = '';
     for (const button of [this.undoButton, this.redoButton, this.deleteButton, this.clearButton, this.importButton, this.jsonButton, this.copyButton, this.downloadButton, this.closeButton]) {
       this.toolbar.appendChild(button);
@@ -709,7 +818,8 @@ export class RedlineOverlay {
     this.grip.addEventListener('pointercancel', event => this._onToolbarPointerUp(event, true));
     this.root.addEventListener('cancel', event => {
       event.preventDefault();
-      this.close();
+      if (this.tool === 'crop') this._finishCrop();
+      else this.close();
     });
   }
 
@@ -837,6 +947,7 @@ export class RedlineOverlay {
   _syncViewport() {
     if (!this.document) return;
     this.svg.setAttribute('viewBox', `0 0 ${this.document.width} ${this.document.height}`);
+    this.cropView.sync(this.document, this.tool === 'crop');
   }
 
   _point(event) {
@@ -968,7 +1079,7 @@ export class RedlineOverlay {
 
   _loadPreferences(saved) {
     if (saved && typeof saved === 'object') {
-      if (Object.hasOwn(TOOL_LABELS, saved.tool)) this.tool = saved.tool;
+      if (saved.tool !== 'crop' && Object.hasOwn(TOOL_LABELS, saved.tool)) this.tool = saved.tool;
       if (/^#[0-9a-f]{6}$/i.test(saved.color)) this.color = saved.color;
       if (Number.isFinite(saved.width) && saved.width >= 1 / 3) this.width = saved.width;
       if (Number.isFinite(saved.brushWidth) && saved.brushWidth > 0) this.brushWidth = saved.brushWidth;
@@ -985,7 +1096,7 @@ export class RedlineOverlay {
 
   _savePreferences() {
     const preferences = {
-      tool: this.tool, color: this.color, width: this.width,
+      tool: this.tool === 'crop' ? this._toolBeforeCrop : this.tool, color: this.color, width: this.width,
       brushWidth: this.brushWidth, brushOpacity: this.brushOpacity,
       textBoxBackgroundOpacity: this.textBoxBackgroundOpacity,
       toolbarPinned: this.toolbarPinned,
@@ -1027,7 +1138,7 @@ export class RedlineOverlay {
   }
 
   async _onPointerDown(event) {
-    if (event.button !== 0 || !this.document) return;
+    if (event.button !== 0 || !this.document || this._busy || this.pageMode || this.tool === 'crop') return;
     event.preventDefault();
     const point = this._point(event);
     this.svg.setPointerCapture?.(event.pointerId);
@@ -1209,6 +1320,7 @@ export class RedlineOverlay {
   }
 
   _applyToolbarPosition() {
+    this._syncToolbarPin();
     if (!this.toolbarPosition) {
       this.toolbar.removeAttribute('data-positioned');
       this.toolbar.style.removeProperty('left');
@@ -1263,8 +1375,7 @@ export class RedlineOverlay {
     else this._clampToolbarPosition();
     this._toolbarDrag = null;
     this._savePreferences();
-    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
-    this.pinButton?.setAttribute('aria-pressed', String(this.toolbarPinned));
+    this._syncToolbarPin();
   }
 
   _onToolbarClick(event) {
@@ -1273,6 +1384,7 @@ export class RedlineOverlay {
     const action = event.target.closest('[data-redline-action]')?.dataset.redlineAction;
     if (!action) return;
     const actions = {
+      'page-mode': () => this.setPageMode(!this.pageMode),
       pin: () => this._toggleToolbarPin(),
       undo: () => this.undo(),
       redo: () => this.redo(),
@@ -1292,20 +1404,37 @@ export class RedlineOverlay {
     this.toolbarPinned = !this.toolbarPinned;
     if (this.toolbarPinned) this.toolbarPosition = null;
     this._savePreferences();
-    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
     this._applyToolbarPosition();
-    this.pinButton?.setAttribute('aria-pressed', String(this.toolbarPinned));
-    if (this.pinButton) this.pinButton.title = this.toolbarPinned
+    this.options.setStatus(this.toolbarPinned ? 'Toolbar pinned to the top-left.' : 'Toolbar unpinned. Drag the grip to move it.');
+  }
+
+  _syncToolbarPin() {
+    this.toolbar.toggleAttribute('data-pinned', this.toolbarPinned);
+    if (!this.pinButton) return;
+    this.pinButton.toggleAttribute('data-active', this.toolbarPinned);
+    this.pinButton.setAttribute('aria-pressed', String(this.toolbarPinned));
+    this.pinButton.title = this.toolbarPinned
       ? 'Unpin toolbar from the top-left'
       : 'Pin toolbar to the top-left';
+    this.pinButton.setAttribute('aria-label', this.pinButton.title);
   }
 
   _onKeyDown(event) {
-    if (!this.active || this._dialogDepth > 0) return;
+    if (!this.active || this.pageMode || this._dialogDepth > 0) return;
     // [extension patch] Listen inside the root and inspect the original target,
     // including when that root is closed to the surrounding page.
     const target = event.composedPath?.()[0] ?? event.target;
+    if (this._busy) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (target === this._textEditor?.element) return;
+    if (this.cropView.handleKey(event, target)) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
     // Let the native modal dialog dispatch its cancel event for Escape.
     if (event.key === 'Escape') return;
     if (event.key === 'Enter' && this._draft && ['polyline', 'polygon'].includes(this._draft.type)) {
@@ -1316,7 +1445,7 @@ export class RedlineOverlay {
     // Chromium may move reverse-Tab from the first control into browser chrome
     // even for a modal dialog. Keep the toolbar's keyboard loop deterministic.
     if (event.key === 'Tab') {
-      const focusable = [...this.toolbar.querySelectorAll('button, input, select, summary, [tabindex]')]
+      const focusable = [...this.root.querySelectorAll('button, input, select, summary, [tabindex]')]
         .filter(element => element.tabIndex >= 0 && !element.matches(':disabled')
           && !element.closest('[hidden], [inert]')
           && element.checkVisibility({ visibilityProperty: true }));
@@ -1340,7 +1469,7 @@ export class RedlineOverlay {
     else if (ctrl && event.key.toLowerCase() === 'y') this.redo();
     else if (!editable && (event.key === 'Delete' || event.key === 'Backspace')) this.removeSelected();
     else if (!editable && !ctrl && !event.altKey) {
-      const tool = { v: 'select', p: 'pen', b: 'brush', e: 'eraser', l: 'line', a: 'arrow', r: 'rectangle', n: 'note', t: 'textbox' }[event.key.toLowerCase()];
+      const tool = { v: 'select', p: 'pen', b: 'brush', e: 'eraser', l: 'line', a: 'arrow', r: 'rectangle', n: 'note', t: 'textbox', c: 'crop' }[event.key.toLowerCase()];
       if (tool) this.setTool(tool);
       else handled = false;
     } else handled = false;
@@ -1359,6 +1488,7 @@ export class RedlineOverlay {
     if (this._draft) annotations.push(this._draft);
     if (this._textEditor?.creating) annotations.push(this._textEditor.mark);
     for (const mark of annotations) this.marksLayer.appendChild(this._renderMark(mark));
+    this.cropView.sync(this.document, this.tool === 'crop');
     this._syncButtons();
     this._events.dispatchEvent(new CustomEvent('redline:changed', { detail: { count: this.document.annotations.length } }));
   }
@@ -1479,6 +1609,7 @@ export class RedlineOverlay {
   }
 
   _syncButtons() {
+    for (const control of this.toolbar.querySelectorAll('button, select, input')) control.disabled = false;
     const count = this.document?.annotations.length ?? 0;
     const selected = this.document?.annotations.find(mark => mark.id === this.selectedId);
     if (this.widthSelect) {
@@ -1506,11 +1637,15 @@ export class RedlineOverlay {
     this.copyButton.disabled = false;
     this.downloadButton.disabled = false;
     this._setMessage(`${count} mark${count === 1 ? '' : 's'}`);
+    this._syncInteractionMode();
   }
 
   _setBusy(busy, message = '') {
+    this._busy = busy;
+    this.root.toggleAttribute('data-busy', busy);
+    this.cropView.cancel();
     if (busy) this._busyFocus = this.root.getRootNode().activeElement;
-    for (const button of this.toolbar.querySelectorAll('button')) button.disabled = busy;
+    for (const control of this.root.querySelectorAll('button, select, input')) control.disabled = busy;
     this.toolbar.toggleAttribute('data-busy', busy);
     if (message) this._setMessage(message);
     if (!busy) {
@@ -1610,4 +1745,3 @@ export class RedlineOverlay {
     }
   }
 }
-

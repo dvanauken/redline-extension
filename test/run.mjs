@@ -16,6 +16,8 @@ try {
 }
 import { fileURLToPath } from 'node:url';
 import { createOverlayAccess } from './browser-access.mjs';
+import { checkCropAndPageMode } from './crop-browser.mjs';
+import { checkToolbarPin } from './pin-browser.mjs';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -129,7 +131,8 @@ try {
       .querySelector('[data-redline-tool="brush"]')));
   check('toolbar icons render inline',
     await evaluate(() => globalThis.__redlineTestRoot
-      .querySelectorAll('[data-redline-tool] svg').length === 11));
+      .querySelectorAll('[data-redline-tool] svg').length === 12));
+  await checkToolbarPin({ page, evaluate, worker, check, waitUntil });
   check('toolbar pin control toggles',
     await evaluate(() => {
       const toolbar = globalThis.__redlineTestRoot.querySelector('[data-redline-toolbar]');
@@ -140,9 +143,16 @@ try {
   const toolbarBeforeDrag = await evaluate(() => {
     const sr = globalThis.__redlineTestRoot;
     const toolbar = sr.querySelector('[data-redline-toolbar]').getBoundingClientRect();
-    const grip = sr.querySelector('[data-redline-grip]').getBoundingClientRect();
-    return { toolbar: { x: toolbar.x, y: toolbar.y }, grip: { x: grip.x, y: grip.y, width: grip.width, height: grip.height } };
+    const gripElement = sr.querySelector('[data-redline-grip]');
+    const grip = gripElement.getBoundingClientRect();
+    return {
+      toolbar: { x: toolbar.x, y: toolbar.y },
+      grip: { x: grip.x, y: grip.y, width: grip.width, height: grip.height, hasIcon: !!gripElement.querySelector('svg') },
+    };
   });
+  check('toolbar grip is visibly vertical',
+    toolbarBeforeDrag.grip.hasIcon && toolbarBeforeDrag.grip.width < toolbarBeforeDrag.grip.height,
+    JSON.stringify(toolbarBeforeDrag.grip));
   await page.mouse.move(toolbarBeforeDrag.grip.x + toolbarBeforeDrag.grip.width / 2, toolbarBeforeDrag.grip.y + toolbarBeforeDrag.grip.height / 2);
   await page.mouse.down();
   await page.mouse.move(toolbarBeforeDrag.grip.x + 180, toolbarBeforeDrag.grip.y + 90, { steps: 4 });
@@ -347,9 +357,9 @@ try {
       || element?.dataset.redlineAction || element?.tagName;
   });
   const closedPath = [];
-  for (let i = 0; i < 6; i++) { await page.keyboard.press('Tab'); closedPath.push(await focusedControl()); }
+  for (let i = 0; i < 7; i++) { await page.keyboard.press('Tab'); closedPath.push(await focusedControl()); }
   check('Tab skips hidden paths and reaches all dropdowns', JSON.stringify(closedPath) === JSON.stringify([
-    'SUMMARY', 'Annotation color', 'Line weight', 'Brush width', 'Brush opacity', 'Text box background',
+    'crop', 'SUMMARY', 'Annotation color', 'Line weight', 'Brush width', 'Brush opacity', 'Text box background',
   ]), JSON.stringify(closedPath));
   await page.keyboard.press('Shift+Tab');
   check('Shift+Tab includes dropdowns', await focusedControl() === 'Brush opacity');
@@ -541,6 +551,9 @@ try {
   await page.keyboard.type('Private test text');
   await page.keyboard.press('Control+Enter');
   check('text editing still saves inside a closed shadow root after resize', await marks() === 2);
+
+  await checkCropAndPageMode({ page, evaluate, importFile, clickAction, check, waitUntil, marks,
+    scratch: SCRATCH, baselinePath: resizedPngPath, inject });
 
   check('website storage remains untouched', await page.evaluate(() => localStorage.getItem('redline.preferences')) === pagePreference);
   await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-tool="pen"]').click());

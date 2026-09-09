@@ -35,6 +35,44 @@ the extension does not fight the browser for the key.
 | Import | round-trips its own JSON; malformed files are rejected without losing marks |
 | Session | marks survive closing and reopening within the same page load |
 
+### Use the page while Redline is open
+
+Click **Page** or press **F2** to use the webpage normally. The toolbar dims,
+and the page receives clicks, typing, and scrolling. Click **Annotate** or
+press **F2** again to resume drawing. The green toolbar border indicates that
+annotation mode is active.
+
+**Pin** docks the toolbar at the top-left and highlights while engaged. It works
+in both modes. Click it again to unpin, or drag the grip to undock and move it.
+
+Marks and the crop are hidden in Page mode and retained when you return.
+They stay at their screen positions; if scrolling or page layout changes move
+the underlying content, reposition the marks to match.
+
+### Crop and resize an export
+
+Choose the **Crop** icon (or press **C**), then drag a rectangle around the
+area to include. Drag inside to move it, or use its eight handles to resize it.
+Arrow keys move the crop one screen pixel; hold Shift for ten pixels. Focus a
+handle with Tab to resize it with those keys. **Select all** provides a
+keyboard-accessible starting rectangle.
+
+Choose **Done**, Enter, or Escape to resume annotation with the crop retained.
+Escape during a drag cancels that gesture. **Reset crop** restores the whole
+viewport. The shaded area, crop outline, handles, and toolbar are excluded from
+both Copy and PNG exports.
+
+The crop panel's **Output** control scales the PNG to 50%, 100%, or 200%.
+100% uses the screenshot's native pixels, including high-DPI resolution.
+The frame label shows screen dimensions, while the panel shows expected PNG
+dimensions. Enlarging the image increases its size, not the screenshot detail.
+
+Cropping does not delete marks or change annotation undo/redo. JSON preserves
+all marks, with optional `document.crop` (`x, y, width, height` in document
+coordinates) and `document.outputScale` fields in the existing version 1
+format. Older files without these fields export the full screen at 100%.
+Crop settings belong to the current session and do not carry to other sites.
+
 Marks use the session's viewport coordinates over the live page. The drawing
 surface and exported PNG use the same scaling when the window changes size.
 Annotation history is separate from the page's undo history.
@@ -151,6 +189,7 @@ upstream.
 
 ```bash
 node --test test/document.test.mjs
+node --test test/crop.test.mjs
 node test/run.mjs      # needs playwright and its Chromium browser
 pwsh -NoProfile -File test/watch-reload.ps1
 ```

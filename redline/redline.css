@@ -2,7 +2,7 @@
 [data-redline-root] {
   position: fixed;
   inset: 0;
-  z-index: 12000;
+  z-index: 2147483647;
   width: 100vw;
   max-width: none;
   height: 100dvh;
@@ -17,6 +17,126 @@
 
 [data-redline-root]::backdrop { background: transparent; }
 [data-redline-root][hidden] { display: none; }
+
+[data-redline-root][data-page-mode] {
+  background: transparent;
+  pointer-events: none;
+}
+[data-redline-root][data-page-mode] > :not([data-redline-toolbar]) { display: none; }
+[data-redline-root][data-page-mode] [data-redline-toolbar] {
+  pointer-events: auto;
+  opacity: 0.5;
+  border-color: #64748b;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+[data-redline-root][data-page-mode] [data-redline-toolbar]:hover,
+[data-redline-root][data-page-mode] [data-redline-toolbar]:focus-within { opacity: 0.8; }
+[data-redline-toolbar] [data-redline-mode] {
+  flex: 0 0 76px;
+  min-width: 76px;
+  color: #a7f3d0;
+}
+
+[data-redline-crop-layer] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+  touch-action: none;
+}
+
+[data-redline-crop-layer][data-editing] {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+[data-redline-crop-frame] {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid #93c5fd;
+  box-shadow: 0 0 0 100vmax rgba(2, 6, 23, 0.55);
+}
+
+[data-editing] [data-redline-crop-frame] { cursor: move; }
+
+[data-redline-crop-handle] {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  min-width: 0;
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 2px solid #60a5fa;
+  border-radius: 3px;
+  background: #fff;
+  touch-action: none;
+}
+
+[data-redline-crop-handle="nw"], [data-redline-crop-handle="se"] { cursor: nwse-resize; }
+[data-redline-crop-handle="ne"], [data-redline-crop-handle="sw"] { cursor: nesw-resize; }
+[data-redline-crop-handle="n"], [data-redline-crop-handle="s"] { cursor: ns-resize; }
+[data-redline-crop-handle="e"], [data-redline-crop-handle="w"] { cursor: ew-resize; }
+
+[data-redline-crop-dimensions] {
+  position: absolute;
+  left: -1px;
+  bottom: calc(100% + 9px);
+  padding: 3px 7px;
+  border-radius: 4px;
+  color: #fff;
+  background: #1e3a5f;
+  font: 600 11px/1.4 system-ui, sans-serif;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+[data-redline-crop-dimensions][data-inside] { top: 9px; bottom: auto; left: 9px; }
+
+[data-redline-crop-panel] {
+  position: absolute;
+  z-index: 3;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 10px 12px;
+  color: #e2e8f0;
+  background: rgba(15, 23, 42, 0.97);
+  border: 1px solid #475569;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  font: 12px/1.4 system-ui, sans-serif;
+}
+
+[data-redline-crop-panel] label { display: inline-flex; align-items: center; gap: 5px; }
+[data-redline-crop-summary] { font-variant-numeric: tabular-nums; white-space: nowrap; }
+[data-redline-crop-panel] button, [data-redline-crop-panel] select {
+  min-height: 30px;
+  padding: 4px 9px;
+  color: #e2e8f0;
+  background: #1e293b;
+  border: 1px solid #64748b;
+  border-radius: 4px;
+  font: inherit;
+  cursor: pointer;
+}
+
+[data-redline-crop-panel] button:hover { background: #334155; }
+[data-redline-crop-panel] [data-crop-action="done"] { background: #2563eb; color: #fff; }
+[data-redline-crop-help] { flex-basis: 100%; text-align: center; color: #94a3b8; }
+[data-redline-crop-frame]:focus-visible,
+[data-redline-crop-handle]:focus-visible,
+[data-redline-crop-panel] :focus-visible { outline: 2px solid #93c5fd; outline-offset: 3px; }
+[data-redline-crop-layer][hidden], [data-redline-crop-panel][hidden],
+[data-redline-crop-layer] [hidden], [data-redline-crop-panel] [hidden] { display: none; }
+[data-redline-root][data-busy] [data-redline-crop-layer] { pointer-events: none; }
 
 [data-redline-canvas] {
   position: absolute;
@@ -154,9 +274,9 @@
   overflow-x: auto;
   color: #f8fafc;
   background: rgba(15, 23, 42, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  border: 1px solid #4ade80;
   border-radius: 9px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.38);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.22), 0 8px 28px rgba(0, 0, 0, 0.38);
   font: 12px/1.2 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   white-space: nowrap;
 }
@@ -173,8 +293,16 @@
 
 [data-redline-grip] {
   flex: 0 0 auto;
+  min-width: 20px !important;
+  padding-inline: 1px !important;
   cursor: grab !important;
   touch-action: none;
+}
+
+[data-redline-grip] svg {
+  width: 12px !important;
+  fill: currentColor !important;
+  stroke: none !important;
 }
 
 [data-redline-grip]:active { cursor: grabbing !important; }

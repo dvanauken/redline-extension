@@ -6,7 +6,9 @@
  * from the editor, a bookmarklet, or a browser-extension host.
  */
 
-const VALID_TYPES = new Set(['pen', 'brush', 'line', 'polyline', 'polygon', 'arrow', 'rectangle', 'note', 'textbox']);
+import { sanitizeCrop, sanitizeOutputScale } from './RedlineCrop.js';
+
+const VALID_TYPES = new Set(['pen', 'arrow', 'rectangle', 'note', 'textbox', 'brush', 'line', 'polyline', 'polygon']);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -92,17 +94,24 @@ function sanitizeAnnotations(annotations) {
 }
 
 export class RedlineDocument {
-  constructor({ width = 1, height = 1, annotations = [] } = {}) {
+  constructor({ width = 1, height = 1, annotations = [], crop = null, outputScale = 1 } = {}) {
     this.width = Math.max(1, finiteNumber(width, 1));
     this.height = Math.max(1, finiteNumber(height, 1));
     this._annotations = sanitizeAnnotations(annotations);
+    this._crop = sanitizeCrop(crop, this.width, this.height);
+    this.outputScale = sanitizeOutputScale(outputScale);
     this._undo = [];
     this._redo = [];
   }
 
   get annotations() { return clone(this._annotations); }
+  get crop() { return this._crop ? { ...this._crop } : null; }
   get canUndo() { return this._undo.length > 0; }
   get canRedo() { return this._redo.length > 0; }
+
+  // Export settings do not change marks or consume their undo history.
+  setCrop(crop) { this._crop = sanitizeCrop(crop, this.width, this.height); }
+  setOutputScale(scale) { this.outputScale = sanitizeOutputScale(scale); }
 
   _commit(next) {
     const clean = sanitizeAnnotations(next);
@@ -163,9 +172,13 @@ export class RedlineDocument {
     }
     // Validate the entire replacement before changing dimensions, marks or history.
     const clean = sanitizeAnnotations(annotations);
+    const crop = sanitizeCrop(data.crop, width, height);
+    const outputScale = sanitizeOutputScale(data.outputScale);
     this.width = width;
     this.height = height;
     this._annotations = clean;
+    this._crop = crop;
+    this.outputScale = outputScale;
     this._undo.length = 0;
     this._redo.length = 0;
   }
@@ -175,6 +188,8 @@ export class RedlineDocument {
       width: this.width,
       height: this.height,
       annotations: this.annotations,
+      ...(this._crop ? { crop: this.crop } : {}),
+      ...(this.outputScale !== 1 ? { outputScale: this.outputScale } : {}),
     };
   }
 }
