@@ -1,7 +1,7 @@
 # Redline — Chrome extension
 
-Annotate any web page with pen, arrow, rectangle, numbered note, and text-box
-marks, then hand an annotated PNG or a portable JSON file to an LLM.
+Annotate any web page with pen, arrow, rectangle, numbered or lettered note, and
+text-box marks, then hand an annotated PNG or a portable JSON file to an LLM.
 
 This packages the framework-free Redline overlay from the `add-redline` skill as
 a Manifest V3 extension, so the feature is available everywhere instead of being
@@ -29,7 +29,9 @@ the extension does not fight the browser for the key.
 
 | | |
 | --- | --- |
-| Tools | select, pen, highlighter, line, arrow, rectangle, numbered note, multiline text box; Paths menu for polyline, polygon, and eraser |
+| Tools | select, pen, highlighter, line, arrow, rectangle, numbered or lettered note, multiline text box; Paths menu for polyline, polygon, and eraser |
+| Styles | a shape-style gallery sets stroke, fill and opacity in one click; fill strength and outline are independent, so a box or polygon can be outline only, fill only, or both; each swatch records an intent (issue, question, approved) in the export |
+| Markers | **Steps** switches note circles between `1, 2, 3` and `A, B, C`, which keeps a marker to one character past nine; the two run as separate sequences |
 | Shortcuts | `V P B L A R N T E` pick a tool, `Ctrl+Z` / `Ctrl+Y` undo and redo, `Esc` closes; Tab and Shift+Tab reach every toolbar control |
 | Export | annotated PNG (download or clipboard) and `open-redline` v1 JSON |
 | Import | round-trips its own JSON; malformed files are rejected without losing marks |
@@ -85,7 +87,7 @@ service-worker.js   injects the bootstrap; answers capture requests
 content.js          classic bootstrap; dynamically imports main.js
 main.js             host integration — shadow root, adapters, one overlay
 host-dialogs.js     native <dialog> note entry and clear confirmation
-color-picker.js     plain-element colour control (see "custom elements" below)
+color-picker.js     plain-element colour and style control (see "custom elements" below)
 redline/            the runtime, owned by this extension
 test/               real-browser acceptance suite
 ```

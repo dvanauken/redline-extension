@@ -1,5 +1,7 @@
 import { RedlineDocument, cryptoId, translateAnnotation } from './RedlineDocument.js';
-import { drawRedlineAnnotations, redlineTextBoxFill } from './RedlineCanvas.js';
+import {
+  drawRedlineAnnotations, redlineMarkFill, redlineMarkStroked, redlineNoteGlyph, redlineTextBoxFill,
+} from './RedlineCanvas.js';
 import { appendIcon } from './icons.js';
 import { cropExportGeometry } from './RedlineCrop.js';
 import { RedlineCropView } from './RedlineCropView.js';
@@ -27,6 +29,8 @@ const TEXTBOX_OPACITIES = [
   ['Transparent', 0],
 ];
 const BRUSH_OPACITIES = [['20%', 0.2], ['35%', 0.35], ['50%', 0.5], ['65%', 0.65]];
+/** Digits run out of room in the circle after 9; letters carry 26 in the same space. */
+const NOTE_MARKERS = [['1, 2, 3', 'numeric'], ['A, B, C', 'alpha']];
 const TOOL_LABELS = {
   select: 'Select',
   crop: 'Crop',
@@ -50,6 +54,12 @@ function svgElement(name, attrs = {}) {
     if (value !== undefined && value !== null) el.setAttribute(key, String(value));
   }
   return el;
+}
+
+/** A hex colour carrying an alpha, for previewing a translucent fill in the UI. */
+function withAlpha(hex, alpha) {
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return hex;
+  return `${hex}${Math.round(Math.min(1, Math.max(0, alpha)) * 255).toString(16).padStart(2, '0')}`;
 }
 
 function distance(a, b) {
@@ -231,6 +241,13 @@ export class RedlineOverlay {
     this.tool = 'pen';
     this._toolBeforeCrop = 'select';
     this.color = DEFAULT_COLOR;
+    // Fill treatment for shapes that enclose an area, chosen from the picker's
+    // style gallery. `fill` null means the fill reuses the stroke colour.
+    this.fill = null;
+    this.fillOpacity = 0;
+    this.outline = true;
+    this.intent = null;
+    this.noteMarker = 'numeric';
     this.width = 1 * PT_TO_CSS_PX;
     this.textBoxBackgroundOpacity = 1;
     this.selectedId = null;
@@ -246,7 +263,7 @@ export class RedlineOverlay {
     this._previousFocus = null;
     this._dialogDepth = 0;
     this._colorDialogResolve = null;
-    this._pendingColor = this.color;
+    this._pendingStyle = null;
     this.toolbarPinned = false;
     this.toolbarPosition = null;
     this._toolbarDrag = null;
@@ -731,8 +748,10 @@ export class RedlineOverlay {
 
     const fillLabel = document.createElement('label');
     fillLabel.dataset.redlineControl = '';
+    // Named for what it actually drives. Shape fill comes from the picker's
+    // style gallery; this only ever touched the text-box backing.
     fillLabel.title = 'Text box background opacity';
-    fillLabel.innerHTML = '<span>Fill</span>';
+    fillLabel.innerHTML = '<span>Text fill</span>';
     this.fillOpacitySelect = document.createElement('select');
     this.fillOpacitySelect.setAttribute('aria-label', 'Text box background');
     for (const [label, value] of TEXTBOX_OPACITIES) {
@@ -755,6 +774,30 @@ export class RedlineOverlay {
     });
     fillLabel.appendChild(this.fillOpacitySelect);
     this.toolbar.appendChild(fillLabel);
+
+    const markerLabel = document.createElement('label');
+    markerLabel.dataset.redlineControl = '';
+    markerLabel.title = 'Numbered or lettered note markers';
+    markerLabel.innerHTML = '<span>Steps</span>';
+    this.noteMarkerSelect = document.createElement('select');
+    this.noteMarkerSelect.setAttribute('aria-label', 'Note marker style');
+    for (const [label, value] of NOTE_MARKERS) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      this.noteMarkerSelect.appendChild(option);
+    }
+    this.noteMarkerSelect.value = this.noteMarker;
+    // Unlike Weight, this sets the style of the *next* note and never touches an
+    // existing one. Creating a note leaves it selected, so applying this to the
+    // selection would silently re-letter the note just placed, and moving a note
+    // between sequences renumbers it — breaking any "see step 2" already typed.
+    this.noteMarkerSelect.addEventListener('change', () => {
+      this.noteMarker = this.noteMarkerSelect.value === 'alpha' ? 'alpha' : 'numeric';
+      this._savePreferences();
+    });
+    markerLabel.appendChild(this.noteMarkerSelect);
+    this.toolbar.appendChild(markerLabel);
 
     this.undoButton = appendIcon(this._button('', 'Undo mark (Ctrl+Z)', 'undo'), 'undo');
     this.redoButton = appendIcon(this._button('', 'Redo mark (Ctrl+Y)', 'redo'), 'redo');
@@ -834,14 +877,14 @@ export class RedlineOverlay {
     this.colorPicker.setAttribute('aria-label', 'Annotation color picker');
     this.colorPicker.addEventListener('wb-change', event => {
       if (!event.detail?.color || !this.colorDialog.open) return;
-      this._pendingColor = event.detail.color;
+      this._pendingStyle = this._styleFromPick(event.detail);
       this.colorDialog.close('apply');
     });
     this.colorPicker.addEventListener('click', event => {
       if (!this.colorDialog.open) return;
       const swatch = event.composedPath().find(node => node instanceof Element && node.matches?.('[data-color]'));
       if (!swatch?.dataset.color) return;
-      this._pendingColor = swatch.dataset.color;
+      this._pendingStyle = this._styleFromPick(swatch.dataset);
       this.colorDialog.close('apply');
     });
     this.colorDialog.appendChild(this.colorPicker);
@@ -861,8 +904,29 @@ export class RedlineOverlay {
     this.colorDialog.addEventListener('close', () => {
       const resolve = this._colorDialogResolve;
       this._colorDialogResolve = null;
-      resolve?.(this.colorDialog.returnValue === 'apply' ? this._pendingColor : null);
+      resolve?.(this.colorDialog.returnValue === 'apply' ? this._pendingStyle : null);
     });
+  }
+
+  /**
+   * Read a style out of a picker event detail or a swatch's dataset.
+   *
+   * A pick that omits `fillOpacity` changes only the colour, which is how the
+   * tint ramp and the custom field leave a gallery treatment alone. The
+   * vendored `<wb-color-picker>` only ever reports a colour, so it lands here
+   * too without needing to know about fills.
+   */
+  _styleFromPick(source) {
+    const style = { color: String(source.color) };
+    if ('intent' in source) style.intent = source.intent ? String(source.intent) : null;
+    if ('fillOpacity' in source) {
+      const opacity = Number(source.fillOpacity);
+      style.fillOpacity = Number.isFinite(opacity) ? Math.min(1, Math.max(0, opacity)) : 0;
+      style.fill = style.fillOpacity > 0 && source.fill ? String(source.fill) : null;
+    }
+    // A dataset carries strings, so only an explicit "false" drops the outline.
+    if ('outline' in source) style.outline = source.outline !== false && source.outline !== 'false';
+    return style;
   }
 
   async _withChildDialog(callback) {
@@ -877,25 +941,61 @@ export class RedlineOverlay {
   async _chooseColor() {
     if (this.colorDialog.open) return false;
     const selected = this.document?.annotations.find(mark => mark.id === this.selectedId);
-    const initialColor = selected?.color ?? this.color;
+    // A selected mark seeds the dialog, so reopening it shows that mark's own
+    // treatment rather than whatever was last chosen from the toolbar.
+    const initial = selected
+      ? {
+        color: selected.color,
+        fill: selected.fill ?? null,
+        fillOpacity: selected.fillOpacity ?? 0,
+        outline: selected.outline !== false,
+        intent: selected.intent ?? null,
+      }
+      : {
+        color: this.color,
+        fill: this.fill,
+        fillOpacity: this.fillOpacity,
+        outline: this.outline,
+        intent: this.intent,
+      };
     // [extension patch] no registry means no upgrade to wait for.
     if (globalThis.customElements) await customElements.whenDefined('wb-color-picker');
-    this._pendingColor = initialColor;
-    this.colorPicker.value = initialColor;
+    this._pendingStyle = null;
+    this.colorPicker.value = initial.color;
+    if ('annotationStyle' in this.colorPicker) this.colorPicker.annotationStyle = initial;
     this.colorDialog.returnValue = 'cancel';
 
-    const nextColor = await this._withChildDialog(() => new Promise(resolve => {
+    const picked = await this._withChildDialog(() => new Promise(resolve => {
       this._colorDialogResolve = resolve;
       this.colorDialog.showModal();
       this._positionColorDialog();
     }));
-    if (!nextColor || !this.active) return false;
+    if (!picked || !this.active) return false;
 
-    this.color = nextColor;
+    // A pick can carry only a colour, so anything it leaves out stays as it was.
+    const next = { ...initial, ...picked };
+    this.color = next.color;
+    this.fill = next.fill ?? null;
+    this.fillOpacity = next.fillOpacity ?? 0;
+    this.outline = next.outline !== false;
+    this.intent = next.intent ?? null;
     this._savePreferences();
     this._syncColorButton();
-    if (!selected || selected.color.toUpperCase() === nextColor.toUpperCase()) return true;
-    this.document.replace(selected.id, { ...selected, color: nextColor });
+    if (!selected) return true;
+    const unchanged = selected.color.toUpperCase() === this.color.toUpperCase()
+      && (selected.fillOpacity ?? 0) === this.fillOpacity
+      && (selected.fill ?? null) === this.fill
+      && (selected.outline !== false) === this.outline
+      && (selected.intent ?? null) === this.intent;
+    if (unchanged) return true;
+    this.document.replace(selected.id, {
+      ...selected,
+      color: this.color,
+      fill: this.fill,
+      fillOpacity: this.fillOpacity,
+      outline: this.outline,
+      intent: this.intent,
+    });
     this._render();
     return true;
   }
@@ -931,8 +1031,23 @@ export class RedlineOverlay {
 
   _syncColorButton() {
     if (!this.colorSwatch || !this.colorButton) return;
-    this.colorSwatch.style.backgroundColor = this.color;
-    this.colorButton.title = `Annotation color: ${this.color}`;
+    // The swatch shows the whole treatment: the stroke as its rim, the fill as
+    // its centre, so the toolbar says what the next box will look like.
+    this._paintSwatch({
+      color: this.color, fill: this.fill, fillOpacity: this.fillOpacity, outline: this.outline,
+    });
+    const fill = this.fillOpacity > 0 ? `, ${Math.round(this.fillOpacity * 100)}% fill` : '';
+    const outline = this.fillOpacity > 0 && !this.outline ? ', no outline' : '';
+    this.colorButton.title = `Annotation color: ${this.color}${fill}${outline}`;
+  }
+
+  /** Show a treatment on the toolbar swatch: fill in the centre, stroke as the rim. */
+  _paintSwatch(style) {
+    const paint = redlineMarkFill(style);
+    this.colorSwatch.style.backgroundColor = paint ? withAlpha(paint.color, paint.opacity) : 'transparent';
+    this.colorSwatch.style.boxShadow = redlineMarkStroked(style)
+      ? `inset 0 0 0 3px ${style.color}`
+      : 'none';
   }
 
   _button(text, title, action = null) {
@@ -1073,14 +1188,33 @@ export class RedlineOverlay {
     return true;
   }
 
-  _nextNoteNumber() {
-    return this.document.annotations.reduce((max, mark) => mark.type === 'note' ? Math.max(max, mark.number) : max, 0) + 1;
+  /**
+   * The next ordinal for a note.
+   *
+   * Numbered and lettered notes run as separate sequences, so a document can
+   * use digits for the main steps and letters for side callouts without one
+   * pushing the other along.
+   */
+  _nextNoteNumber(marker = this.noteMarker) {
+    const style = marker === 'alpha' ? 'alpha' : 'numeric';
+    return this.document.annotations.reduce((max, mark) => (
+      mark.type === 'note' && (mark.marker === 'alpha' ? 'alpha' : 'numeric') === style
+        ? Math.max(max, mark.number)
+        : max
+    ), 0) + 1;
   }
 
   _loadPreferences(saved) {
     if (saved && typeof saved === 'object') {
       if (saved.tool !== 'crop' && Object.hasOwn(TOOL_LABELS, saved.tool)) this.tool = saved.tool;
       if (/^#[0-9a-f]{6}$/i.test(saved.color)) this.color = saved.color;
+      if (/^#[0-9a-f]{6}$/i.test(saved.fill)) this.fill = saved.fill;
+      if (Number.isFinite(saved.fillOpacity) && saved.fillOpacity >= 0 && saved.fillOpacity <= 1) {
+        this.fillOpacity = saved.fillOpacity;
+      }
+      if (saved.outline === false) this.outline = false;
+      if (typeof saved.intent === 'string' && saved.intent) this.intent = saved.intent.slice(0, 32);
+      if (saved.noteMarker === 'alpha' || saved.noteMarker === 'numeric') this.noteMarker = saved.noteMarker;
       if (Number.isFinite(saved.width) && saved.width >= 1 / 3) this.width = saved.width;
       if (Number.isFinite(saved.brushWidth) && saved.brushWidth > 0) this.brushWidth = saved.brushWidth;
       if (Number.isFinite(saved.brushOpacity) && saved.brushOpacity >= 0 && saved.brushOpacity <= 1) this.brushOpacity = saved.brushOpacity;
@@ -1097,6 +1231,8 @@ export class RedlineOverlay {
   _savePreferences() {
     const preferences = {
       tool: this.tool === 'crop' ? this._toolBeforeCrop : this.tool, color: this.color, width: this.width,
+      fill: this.fill, fillOpacity: this.fillOpacity, outline: this.outline, intent: this.intent,
+      noteMarker: this.noteMarker,
       brushWidth: this.brushWidth, brushOpacity: this.brushOpacity,
       textBoxBackgroundOpacity: this.textBoxBackgroundOpacity,
       toolbarPinned: this.toolbarPinned,
@@ -1163,7 +1299,9 @@ export class RedlineOverlay {
       if (this.active && text) {
         const mark = this.document.add({
           id: cryptoId(), type: 'note', point, text,
-          number: this._nextNoteNumber(), color: this.color, width: this.width,
+          number: this._nextNoteNumber(), marker: this.noteMarker,
+          color: this.color, width: this.width,
+          ...(this.intent ? { intent: this.intent } : {}),
         });
         this.selectedId = mark.id;
         this._render();
@@ -1179,7 +1317,7 @@ export class RedlineOverlay {
     if (this.tool === 'polyline' || this.tool === 'polygon') {
       if (!this._draft) this._draft = {
         id: cryptoId(), type: this.tool, points: [point], previewPoint: point,
-        color: this.color, width: this.width,
+        ...this._draftStyle(),
       };
       else this._draft.points.push(point);
       this._render();
@@ -1187,9 +1325,27 @@ export class RedlineOverlay {
     }
 
     this._draft = this.tool === 'pen' || this.tool === 'brush'
-      ? { id: cryptoId(), type: this.tool, points: [point, point], color: this.color, width: this.tool === 'brush' ? this.brushWidth : this.width, opacity: this.tool === 'brush' ? this.brushOpacity : 1 }
-      : { id: cryptoId(), type: this.tool, start: point, end: point, color: this.color, width: this.width };
+      ? { id: cryptoId(), type: this.tool, points: [point, point], ...this._draftStyle(), width: this.tool === 'brush' ? this.brushWidth : this.width, opacity: this.tool === 'brush' ? this.brushOpacity : 1 }
+      : { id: cryptoId(), type: this.tool, start: point, end: point, ...this._draftStyle() };
     this._render();
+  }
+
+  /**
+   * Style every new mark inherits from the toolbar.
+   *
+   * The fill fields are only included when there is a fill to apply, so an
+   * unfilled mark is byte-identical to one made before fills existed. The
+   * model drops them anyway for types that cannot enclose an area.
+   */
+  _draftStyle() {
+    const style = { color: this.color, width: this.width };
+    if (this.intent) style.intent = this.intent;
+    if (this.fillOpacity > 0) {
+      style.fillOpacity = this.fillOpacity;
+      if (this.fill) style.fill = this.fill;
+      if (!this.outline) style.outline = false;
+    }
+    return style;
   }
 
   _onPointerMove(event) {
@@ -1511,13 +1667,20 @@ export class RedlineOverlay {
     const isActivelyEditing = mark.id === this._textEditor?.mark.id;
     if (mark.id === this.selectedId && !isActivelyEditing) group.setAttribute('data-selected', '');
     const common = { fill: 'none', stroke: mark.color, 'stroke-width': mark.width, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' };
+    const paint = redlineMarkFill(mark);
+    const filled = paint ? { fill: paint.color, 'fill-opacity': paint.opacity } : null;
+    const outlined = redlineMarkStroked(mark);
 
     if (['pen', 'brush', 'polyline', 'polygon'].includes(mark.type)) {
       const renderPoints = mark.previewPoint ? [...mark.points, mark.previewPoint] : mark.points;
       const points = renderPoints.map(point => `${point.x},${point.y}`).join(' ');
       const style = mark.type === 'brush'
         ? { ...common, 'stroke-opacity': mark.opacity ?? 0.35, 'stroke-width': Math.max(mark.width * 4, 6) }
-        : common;
+        : outlined ? common : { ...common, stroke: 'none' };
+      // A filled polygon paints under its own outline, so it goes in first.
+      if (mark.type === 'polygon' && filled && renderPoints.length > 2) {
+        group.appendChild(svgElement('polygon', { ...filled, stroke: 'none', points }));
+      }
       const polyline = svgElement('polyline', { ...style, points });
       group.appendChild(polyline);
       if (mark === this._draft) this._draftElement = polyline;
@@ -1536,6 +1699,8 @@ export class RedlineOverlay {
     } else if (mark.type === 'rectangle') {
       group.appendChild(svgElement('rect', {
         ...common,
+        ...(filled ?? {}),
+        ...(outlined ? {} : { stroke: 'none' }),
         x: Math.min(mark.start.x, mark.end.x),
         y: Math.min(mark.start.y, mark.end.y),
         width: Math.abs(mark.end.x - mark.start.x),
@@ -1574,7 +1739,7 @@ export class RedlineOverlay {
       const labelWidth = Math.min(420, Math.max(90, mark.text.length * 7.6 + 20));
       group.appendChild(svgElement('circle', { cx: mark.point.x, cy: mark.point.y, r: 14, fill: mark.color }));
       const number = svgElement('text', { x: mark.point.x, y: mark.point.y + 5, 'text-anchor': 'middle', fill: '#fff' });
-      number.textContent = String(mark.number);
+      number.textContent = redlineNoteGlyph(mark.number, mark.marker);
       group.appendChild(number);
       group.appendChild(svgElement('rect', {
         x: mark.point.x + 22, y: mark.point.y - 16, width: labelWidth, height: 32,
@@ -1628,6 +1793,13 @@ export class RedlineOverlay {
       ));
       this.fillOpacitySelect.value = String(nearest[1]);
     }
+    // Always the default for the next note, never the selection: a control that
+    // does not apply to the selected mark must not claim to describe it.
+    if (this.noteMarkerSelect) this.noteMarkerSelect.value = this.noteMarker;
+    // The swatch tracks the selection too, so it always shows the treatment the
+    // picker would open on.
+    if (this.colorSwatch && selected) this._paintSwatch(selected);
+    else this._syncColorButton();
     this.undoButton.disabled = !this.document?.canUndo;
     this.redoButton.disabled = !this.document?.canRedo;
     this.deleteButton.disabled = !this.selectedId;

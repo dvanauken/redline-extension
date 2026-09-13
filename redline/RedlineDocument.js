@@ -10,6 +10,15 @@ import { sanitizeCrop, sanitizeOutputScale } from './RedlineCrop.js';
 
 const VALID_TYPES = new Set(['pen', 'arrow', 'rectangle', 'note', 'textbox', 'brush', 'line', 'polyline', 'polygon']);
 
+/**
+ * Shapes that enclose an area, and so can carry a fill.
+ *
+ * A text box is deliberately absent: it already has `backgroundOpacity` for its
+ * dark backing, and giving it a second fill would leave two properties fighting
+ * over one surface.
+ */
+const FILLABLE_TYPES = new Set(['rectangle', 'polygon']);
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -38,6 +47,26 @@ export function sanitizeAnnotation(annotation) {
     width: Math.max(1 / 3, finiteNumber(annotation.width, 4 / 3)),
   };
 
+  // What the mark means, carried into the export so a reader does not have to
+  // infer intent from a hex value.
+  const intent = String(annotation.intent ?? '').trim().slice(0, 32);
+  if (intent) base.intent = intent;
+
+  // `fill` defaults to the stroke colour, which is what lets one swatch set
+  // stroke and fill together. Only a fill that will actually be painted is kept,
+  // so an unfilled mark serialises exactly as it did before.
+  if (FILLABLE_TYPES.has(annotation.type)) {
+    const fillOpacity = Math.min(1, Math.max(0, finiteNumber(annotation.fillOpacity, 0)));
+    if (fillOpacity > 0) {
+      base.fillOpacity = fillOpacity;
+      const fill = String(annotation.fill ?? '').trim();
+      if (fill && fill.toUpperCase() !== base.color.toUpperCase()) base.fill = fill;
+    }
+    // A mark must paint something, so the outline can only be dropped when
+    // there is a fill left to carry it.
+    if (annotation.outline === false && fillOpacity > 0) base.outline = false;
+  }
+
   if (['pen', 'brush', 'polyline', 'polygon'].includes(annotation.type)) {
     const points = Array.isArray(annotation.points)
       ? annotation.points.map(sanitizePoint)
@@ -52,7 +81,12 @@ export function sanitizeAnnotation(annotation) {
       ...base,
       point: sanitizePoint(annotation.point),
       text: String(annotation.text ?? '').trim(),
+      // Always the plain ordinal. How it is drawn is `marker`'s business, so a
+      // sequence can be re-lettered without renumbering.
       number: Math.max(1, Math.floor(finiteNumber(annotation.number, 1))),
+      // Only stored when it differs from the default, so existing notes
+      // serialise exactly as they did.
+      ...(annotation.marker === 'alpha' ? { marker: 'alpha' } : {}),
     };
   }
 

@@ -321,14 +321,43 @@ try {
       inShadow: !!d, open: !!d?.open,
       inPage: !!document.querySelector('dialog[data-dialog="redline-color"]'),
       swatches: d?.querySelectorAll('[data-redline-picker] button[data-color]').length ?? 0,
-      customInput: !!d?.querySelector('[data-redline-picker] input[type="color"]'),
+      styleCells: d?.querySelectorAll('[data-redline-picker] button[data-style-cell]').length ?? 0,
+      // Some swatches sit too close to the panel to be seen without an edge,
+      // and only those should carry one.
+      edged: [...(d?.querySelectorAll('[data-redline-picker] button[data-color]') ?? [])]
+        .filter(node => node.hasAttribute('data-edge')).length,
+      tabs: [...(d?.querySelectorAll('[data-redline-picker] [data-tabs] button') ?? [])].map(node => node.textContent),
       registry: globalThis.customElements === null ? 'null' : typeof customElements,
     };
   });
   check('color dialog mounts in the shadow root (patch 1)',
     color.inShadow && color.open && !color.inPage, JSON.stringify(color));
+  // 8 palette columns: 4 gallery rows of style cells plus a 5-row tint ramp.
   check('replacement colour picker renders without a custom-element registry',
-    color.swatches === 32 && color.customInput, JSON.stringify(color));
+    color.styleCells === 32 && color.swatches === 72
+    && color.tabs.join() === 'Theme,Standard,Custom', JSON.stringify(color));
+  check('only swatches that need separating from the panel carry an edge',
+    color.edged > 0 && color.edged < color.swatches, JSON.stringify(color));
+  // The custom field moved behind its own tab, so it has to be reachable there.
+  // The picker remembers its tab between openings, so this leaves it on Theme.
+  const customTab = await evaluate(() => {
+    const sr = globalThis.__redlineTestRoot;
+    const tab = label => [...sr.querySelectorAll('[data-redline-picker] [data-tabs] button')]
+      .find(node => node.textContent === label);
+    tab('Custom').click();
+    const onCustom = {
+      input: !!sr.querySelector('[data-redline-picker] input[type="color"]'),
+      swatches: sr.querySelectorAll('[data-redline-picker] button[data-color]').length,
+    };
+    tab('Theme').click();
+    return {
+      ...onCustom,
+      backToGallery: sr.querySelectorAll('[data-redline-picker] button[data-style-cell]').length,
+    };
+  });
+  check('custom colour field is reachable from its tab, and the gallery comes back',
+    customTab.input && customTab.swatches === 0 && customTab.backToGallery === 32,
+    JSON.stringify(customTab));
   await page.keyboard.press('Escape');
   await page.waitForTimeout(400);
 
@@ -502,7 +531,13 @@ try {
   });
   await clickAction('color');
   await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'color dialog opened');
-  await evaluate(() => globalThis.__redlineTestRoot.querySelector('button[data-color="#dc2626"]').click());
+  // The colour now lives in the style gallery. The outline cell is the one that
+  // sets a stroke and leaves fills off, which is what a line wants.
+  await evaluate(() => {
+    const swatch = [...globalThis.__redlineTestRoot.querySelectorAll('button[data-color]')]
+      .find(node => node.dataset.color.toUpperCase() === '#DC2626' && node.dataset.styleCell === 'outline');
+    swatch.click();
+  });
   await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'color applied');
   await page.mouse.move(200, 300);
   await page.mouse.down();
@@ -559,7 +594,9 @@ try {
   await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-tool="pen"]').click());
   await waitUntil(async () => {
     const saved = await worker.evaluate(async () => (await chrome.storage.local.get('redline.preferences'))['redline.preferences']);
-    return saved?.tool === 'pen' && saved?.color === '#dc2626' && saved?.width === 8;
+    // Hex case is incidental: the picker reports uppercase, matching the
+    // vendored element it stands in for, and every comparison folds case.
+    return saved?.tool === 'pen' && saved?.color?.toLowerCase() === '#dc2626' && saved?.width === 8;
   }, 'preferences saved to extension storage');
   check('preferences persist in extension storage', true);
   await access.dispose();
@@ -574,9 +611,136 @@ try {
       color: sr.querySelector('[data-redline-color]').title,
       width: sr.querySelector('select[aria-label="Line weight"]').value };
   });
-  check('preferences restore on another website', restored.tool === 'pen' && restored.color.includes('#dc2626') && restored.width === '8', JSON.stringify(restored));
+  check('preferences restore on another website', restored.tool === 'pen' && restored.color.toLowerCase().includes('#dc2626') && restored.width === '8', JSON.stringify(restored));
   check('another website gets no Redline storage entry', await page.evaluate(() => localStorage.getItem('redline.preferences')) === null);
   check('closed shadow isolation survives navigation', await page.evaluate(() => document.querySelector('[data-redline-extension]').shadowRoot === null));
+
+  // --- Shape fills and note markers, on a document of their own so the counts
+  // --- above are unaffected.
+  const stylePath = path.join(SCRATCH, 'styles.json');
+  await fs.writeFile(stylePath, JSON.stringify({ format: 'open-redline', version: 1,
+    document: { width: 600, height: 800, annotations: [] } }));
+  await importFile(stylePath);
+  await waitUntil(async () => await marks() === 0, 'style document imported');
+
+  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-tool="rectangle"]').click());
+  await clickAction('color');
+  await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'gallery opened');
+  await evaluate(() => {
+    const cell = [...globalThis.__redlineTestRoot.querySelectorAll('button[data-style-cell="tint-50"]')]
+      .find(node => node.dataset.intent === 'issue');
+    cell.click();
+  });
+  await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'style applied');
+  await page.mouse.move(120, 200); await page.mouse.down();
+  await page.mouse.move(380, 360, { steps: 4 }); await page.mouse.up();
+  await page.waitForTimeout(200);
+  const boxStyle = await evaluate(() => {
+    const rect = globalThis.__redlineTestRoot.querySelector('[data-redline-type="rectangle"] rect');
+    return {
+      fill: rect.getAttribute('fill'),
+      fillOpacity: rect.getAttribute('fill-opacity'),
+      stroke: rect.getAttribute('stroke'),
+    };
+  });
+  check('a gallery cell paints a translucent fill and its own stroke',
+    boxStyle.fill?.toLowerCase() === '#dc2626' && boxStyle.fillOpacity === '0.5'
+    && boxStyle.stroke?.toLowerCase() === '#dc2626', JSON.stringify(boxStyle));
+
+  // Fill and outline are independent axes, so a fill-only box has to be reachable.
+  await clickAction('color');
+  await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'gallery reopened');
+  const toggleState = await evaluate(() => {
+    const sr = globalThis.__redlineTestRoot;
+    const off = [...sr.querySelectorAll('[data-outline-toggle] button')]
+      .find(node => node.textContent === 'No outline');
+    off.click();
+    const cells = [...sr.querySelectorAll('button[data-style-cell]')];
+    return {
+      // With no outline and no fill a cell would paint nothing.
+      disabled: cells.filter(node => node.disabled).length,
+      outlineRow: cells.filter(node => node.dataset.styleCell === 'outline' && node.disabled).length,
+    };
+  });
+  check('turning the outline off disables only the cells that would paint nothing',
+    toggleState.disabled === 8 && toggleState.outlineRow === 8, JSON.stringify(toggleState));
+  await evaluate(() => {
+    const cell = [...globalThis.__redlineTestRoot.querySelectorAll('button[data-style-cell="tint-50"]')]
+      .find(node => node.dataset.intent === 'approved');
+    cell.click();
+  });
+  // The dialog closes synchronously on the click, but the restyle lands in the
+  // microtask after, so wait for the mark itself rather than for the dialog.
+  const boxAttr = name => evaluate(attribute => globalThis.__redlineTestRoot
+    .querySelector('[data-redline-type="rectangle"] rect').getAttribute(attribute), name);
+  await waitUntil(async () => (await boxAttr('stroke')) === 'none', 'fill-only style applied');
+  const fillOnly = { fill: await boxAttr('fill'), stroke: await boxAttr('stroke') };
+  check('a fill-only box paints its fill and no stroke',
+    fillOnly.fill?.toLowerCase() === '#16a34a' && fillOnly.stroke === 'none', JSON.stringify(fillOnly));
+
+  // Put the outline back so the export below matches the pixel assertion.
+  await clickAction('color');
+  await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'gallery reopened');
+  await evaluate(() => {
+    const sr = globalThis.__redlineTestRoot;
+    [...sr.querySelectorAll('[data-outline-toggle] button')].find(node => node.textContent === 'Outline').click();
+    [...sr.querySelectorAll('button[data-style-cell="tint-50"]')].find(node => node.dataset.intent === 'issue').click();
+  });
+  await waitUntil(async () => (await boxAttr('stroke'))?.toLowerCase() === '#dc2626', 'outline restored');
+  // The PNG renderer has its own drawing path, so the fill has to show there too.
+  const [filledDownload] = await Promise.all([page.waitForEvent('download'), clickAction('download')]);
+  const filledPngPath = path.join(SCRATCH, 'filled.png');
+  await filledDownload.saveAs(filledPngPath);
+  await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-redline-toolbar]').hasAttribute('data-busy')), 'fill export finished');
+  const insidePixel = await evaluate(async base64 => {
+    const image = new Image();
+    image.src = 'data:image/png;base64,' + base64;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width; canvas.height = image.height;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    // Well inside the box, away from both strokes.
+    return [...canvas.getContext('2d').getImageData(
+      Math.round(250 * image.width / innerWidth),
+      Math.round(280 * image.height / innerHeight), 1, 1).data];
+  }, (await fs.readFile(filledPngPath)).toString('base64'));
+  check('the PNG paints the fill, blended rather than opaque',
+    insidePixel[0] > 200 && insidePixel[1] > 90 && insidePixel[1] < 190,
+    JSON.stringify(insidePixel));
+
+  const addNote = async (x, y, text) => {
+    await page.keyboard.press('n');
+    await page.mouse.click(x, y);
+    await waitUntil(() => evaluate(() => !!globalThis.__redlineTestRoot
+      .querySelector('dialog[data-redline-host-dialog]')?.open), 'note dialog opened');
+    await page.keyboard.type(text);
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(250);
+  };
+  // The circle's own glyph, in document order.
+  const glyphs = () => evaluate(() => [...globalThis.__redlineTestRoot
+    .querySelectorAll('[data-redline-type="note"]')].map(group => group.querySelector('text').textContent));
+  const setMarker = value => evaluate(style => {
+    const select = globalThis.__redlineTestRoot.querySelector('select[aria-label="Note marker style"]');
+    select.value = style;
+    select.dispatchEvent(new Event('change'));
+  }, value);
+
+  await addNote(120, 520, 'first step');
+  await addNote(120, 600, 'second step');
+  // Creating a note leaves it selected, so a marker control that applied to the
+  // selection would silently re-letter the note just placed.
+  await setMarker('alpha');
+  const afterSwitch = await glyphs();
+  check('changing the marker style leaves existing notes alone',
+    afterSwitch.join() === '1,2', JSON.stringify(afterSwitch));
+  await addNote(330, 520, 'a callout');
+  await addNote(330, 600, 'another callout');
+  await setMarker('numeric');
+  await addNote(120, 680, 'third step');
+  const sequence = await glyphs();
+  check('numbered and lettered notes run as separate sequences',
+    sequence.join() === '1,2,A,B,3', JSON.stringify(sequence));
   await access.dispose();
 } catch (error) {
   check('test run completed without an unhandled error', false, error.message);

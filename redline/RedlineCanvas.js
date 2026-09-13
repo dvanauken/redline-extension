@@ -31,6 +31,51 @@ function roundedRect(ctx, x, y, width, height, radius) {
   ctx.closePath();
 }
 
+/**
+ * Fill paint for a mark, or null when it has none.
+ *
+ * Shared with the SVG overlay so the PNG and the live marks cannot disagree.
+ * A mark's `fill` defaults to its stroke colour, which is what lets a single
+ * swatch set stroke and fill together.
+ */
+export function redlineMarkFill(mark) {
+  const opacity = Number(mark?.fillOpacity);
+  if (!Number.isFinite(opacity) || opacity <= 0) return null;
+  return { color: mark.fill ?? mark.color, opacity: Math.min(1, opacity) };
+}
+
+/**
+ * Whether a mark paints its outline.
+ *
+ * Dropping the outline is only allowed where a fill takes over; a shape with
+ * neither would be invisible. The model enforces that too, but a draft is drawn
+ * before it reaches the model, so the guard belongs here as well.
+ */
+export function redlineMarkStroked(mark) {
+  if (mark?.outline !== false) return true;
+  return !redlineMarkFill(mark);
+}
+
+/**
+ * The glyph inside a note's circle.
+ *
+ * A number only stays one character up to 9, and the circle has no room for
+ * two. Letters carry 26 steps in the same space; past Z they keep going the way
+ * spreadsheet columns do (AA, AB) rather than breaking. The stored `number` is
+ * always the plain ordinal, so the sequence survives either presentation.
+ */
+export function redlineNoteGlyph(number, marker = 'numeric') {
+  const ordinal = Math.max(1, Math.floor(Number(number)) || 1);
+  if (marker !== 'alpha') return String(ordinal);
+  let remaining = ordinal;
+  let glyph = '';
+  while (remaining > 0) {
+    glyph = String.fromCharCode(65 + ((remaining - 1) % 26)) + glyph;
+    remaining = Math.floor((remaining - 1) / 26);
+  }
+  return glyph;
+}
+
 /** Match the presentation-style text boxes used by the main canvas. */
 export function redlineTextBoxFill(opacity = 1) {
   const alpha = Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 1));
@@ -81,10 +126,25 @@ export function drawRedlineAnnotations(ctx, annotations, {
       if (mark.type === 'brush') {
         ctx.lineWidth = Math.max(mark.width * 4, 6);
       }
-      line(ctx, mark.points);
-      if (mark.type === 'polygon' && mark.points.length > 1) {
-        ctx.lineTo(mark.points[0].x, mark.points[0].y);
-        ctx.stroke();
+      // The fill goes down first so the stroke stays crisp on top of it.
+      const areaPaint = mark.type === 'polygon' ? redlineMarkFill(mark) : null;
+      if (areaPaint && mark.points.length > 2) {
+        ctx.save();
+        ctx.globalAlpha = areaPaint.opacity;
+        ctx.fillStyle = areaPaint.color;
+        ctx.beginPath();
+        ctx.moveTo(mark.points[0].x, mark.points[0].y);
+        for (let i = 1; i < mark.points.length; i++) ctx.lineTo(mark.points[i].x, mark.points[i].y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+      }
+      if (redlineMarkStroked(mark)) {
+        line(ctx, mark.points);
+        if (mark.type === 'polygon' && mark.points.length > 1) {
+          ctx.lineTo(mark.points[0].x, mark.points[0].y);
+          ctx.stroke();
+        }
       }
       ctx.restore();
     } else if (mark.type === 'line') {
@@ -94,7 +154,17 @@ export function drawRedlineAnnotations(ctx, annotations, {
     } else if (mark.type === 'rectangle') {
       const x = Math.min(mark.start.x, mark.end.x);
       const y = Math.min(mark.start.y, mark.end.y);
-      ctx.strokeRect(x, y, Math.abs(mark.end.x - mark.start.x), Math.abs(mark.end.y - mark.start.y));
+      const boxWidth = Math.abs(mark.end.x - mark.start.x);
+      const boxHeight = Math.abs(mark.end.y - mark.start.y);
+      const paint = redlineMarkFill(mark);
+      if (paint) {
+        ctx.save();
+        ctx.globalAlpha = paint.opacity;
+        ctx.fillStyle = paint.color;
+        ctx.fillRect(x, y, boxWidth, boxHeight);
+        ctx.restore();
+      }
+      if (redlineMarkStroked(mark)) ctx.strokeRect(x, y, boxWidth, boxHeight);
     } else if (mark.type === 'textbox') {
       const x = Math.min(mark.start.x, mark.end.x);
       const y = Math.min(mark.start.y, mark.end.y);
@@ -133,7 +203,7 @@ export function drawRedlineAnnotations(ctx, annotations, {
       ctx.font = `bold 14px ${fontFamily}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(String(mark.number), mark.point.x, mark.point.y + 0.5);
+      ctx.fillText(redlineNoteGlyph(mark.number, mark.marker), mark.point.x, mark.point.y + 0.5);
 
       ctx.font = `600 14px ${fontFamily}`;
       ctx.textAlign = 'left';
