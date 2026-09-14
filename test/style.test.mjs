@@ -31,14 +31,16 @@ test('fill paint defaults to the stroke colour and ignores an absent fill', () =
 });
 
 test('a swatch gets an edge only when it cannot be told from the panel', () => {
-  // Ink is 1.03:1 against #181b22 and would read as a hole without one.
-  assert.equal(edgeFor('#111827'), 'rgba(255, 255, 255, 0.38)');
+  // The rule is panel-relative. On a dark panel, Ink is 1.03:1 against #181b22
+  // and would read as a hole without one.
+  const dark = '#181b22';
+  assert.equal(edgeFor('#111827', dark), 'rgba(255, 255, 255, 0.5)');
   // These already separate themselves.
-  assert.equal(edgeFor('#FFFFFF'), null);
-  assert.equal(edgeFor('#DC2626'), null);
-  assert.equal(edgeFor('#2563EB'), null);
+  assert.equal(edgeFor('#FFFFFF', dark), null);
+  assert.equal(edgeFor('#DC2626', dark), null);
+  assert.equal(edgeFor('#2563EB', dark), null);
   // A swatch lighter than the panel but still too close takes a dark edge.
-  assert.equal(edgeFor('#22262e'), 'rgba(0, 0, 0, 0.45)');
+  assert.equal(edgeFor('#22262e', dark), 'rgba(41, 45, 50, 0.32)');
 });
 
 test('the tint ramp runs light to dark and keeps its hue', () => {

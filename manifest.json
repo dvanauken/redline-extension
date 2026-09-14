@@ -2,10 +2,11 @@
   "manifest_version": 3,
   "name": "Redline",
   "version": "0.1.0",
-  "description": "Annotate any web page with pen, arrow, box, numbered note, and text marks, then export an annotated PNG or portable JSON.",
+  "description": "Annotate any web page with shapes, bullets, notes and text, then export an annotated PNG, a report, or portable JSON.",
   "permissions": ["activeTab", "scripting", "clipboardWrite", "storage"],
   "background": {
-    "service_worker": "service-worker.js"
+    "service_worker": "service-worker.js",
+    "type": "module"
   },
   "action": {
     "default_title": "Redline this page (Ctrl+Shift+R)"

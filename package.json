@@ -1,0 +1,23 @@
+{
+  "name": "redline-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Development tooling for the Redline Chrome extension. The extension itself has no runtime dependencies.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup:browser": "playwright install chromium",
+    "test": "node test/all.mjs",
+    "test:model": "node --test test/*.test.mjs",
+    "test:browser": "node test/run.mjs",
+    "test:phase2": "node test/phase2-browser.mjs",
+    "test:phase3": "node test/phase3-browser.mjs && node test/phase3-recovery-browser.mjs",
+    "test:watcher": "pwsh -NoProfile -File test/watch-reload.ps1",
+    "screenshots": "node test/screenshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.61.0"
+  }
+}

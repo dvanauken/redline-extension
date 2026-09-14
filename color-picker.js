@@ -1,30 +1,33 @@
 /**
- * Colour and style control for the Redline extension.
+ * Colour control for the Redline extension.
  *
  * The bundled runtime normally uses the vendored `<wb-color-picker>` custom
  * element. Chrome gives an isolated-world content script a *null*
  * `customElements` registry, so no custom element can ever be defined or
  * upgraded there. This module supplies a plain-element replacement instead.
  *
- * It honours the same two contracts the overlay already listens for, extended
- * so one click can set a whole style rather than only a stroke colour:
- *   - swatch buttons carry `data-color`, which the overlay reads on click, plus
- *     `data-fill` / `data-fill-opacity` / `data-intent` where they apply;
- *   - a `wb-change` CustomEvent whose detail carries the same fields.
+ * It honours the two contracts the overlay listens for:
+ *   - swatch buttons carry `data-color` (and `data-intent` for named presets),
+ *     which the overlay reads on click;
+ *   - a `wb-change` CustomEvent whose detail carries `{ color, intent }`.
+ *     The event is not composed, so nothing about the pick crosses the shadow
+ *     boundary into the page.
  *
- * A swatch that omits `data-fill-opacity` leaves the current fill treatment
- * alone, so the tint ramp and the custom picker change colour without
- * disturbing a style chosen from the gallery.
+ * The picker chooses a colour only. Whether it becomes an outline or a fill,
+ * and how transparent a fill is, is decided by the style row that opened it,
+ * so a lighter tint is never confused with a see-through fill.
+ *
+ * Keyboard: the tabs use arrow keys, Home and End (activation follows focus);
+ * each swatch grid is one Tab stop navigated with arrow keys, Home and End;
+ * Enter or Space picks.
  */
 
 /**
- * Eight entries that mean something, rather than a wall of hues.
- *
- * The export is read downstream as a PNG plus JSON, and in the JSON a mark is
- * just `color: "#ea580c"` with no meaning attached. Pairing each colour with an
- * intent makes the annotation file self-describing.
+ * Named presets that mean something, rather than a wall of hues. In the JSON a
+ * mark is otherwise just `color: "#DC2626"`; the intent makes the file
+ * self-describing.
  */
-const PALETTE = [
+export const PALETTE = [
   { name: 'Issue', intent: 'issue', hex: '#DC2626' },
   { name: 'Question', intent: 'question', hex: '#D97706' },
   { name: 'Suggestion', intent: 'suggestion', hex: '#7C3AED' },
@@ -41,25 +44,8 @@ const STANDARD_COLORS = [
   '#00B050', '#00B0F0', '#0070C0', '#002060', '#7030A0',
 ];
 
-/**
- * Fill treatments, one gallery row each.
- *
- * `strokeShade` indexes the tint/shade ramp below: the solid row darkens its
- * own outline, which is how PowerPoint keeps an intense fill from reading as a
- * flat blob.
- */
-const STYLES = [
-  { key: 'outline', label: 'Outline', fillOpacity: 0, strokeShade: null },
-  { key: 'tint-25', label: '25% fill', fillOpacity: 0.25, strokeShade: null },
-  { key: 'tint-50', label: '50% fill', fillOpacity: 0.5, strokeShade: null },
-  { key: 'solid', label: 'Solid', fillOpacity: 1, strokeShade: 4 },
-];
-
 /** The panel the swatches sit on. The border rule below is derived from it. */
-const PANEL = '#181b22';
-
-/** The inset ground a gallery cell draws its preview on. */
-const CELL_GROUND = '#11141a';
+export const PANEL = '#FFFFFF';
 
 /** Below this contrast ratio a swatch cannot be told from the panel. */
 const EDGE_THRESHOLD = 1.6;
@@ -140,12 +126,12 @@ export function variantFor(hex, row) {
   return rgbToHex(...oklchToRgb(targetL, newC, h));
 }
 
-function relativeLuminance(hex) {
+export function relativeLuminance(hex) {
   const [r, g, b] = hexToRgb(hex);
   return 0.2126 * srgbToLinear(r) + 0.7152 * srgbToLinear(g) + 0.0722 * srgbToLinear(b);
 }
 
-function contrastRatio(a, b) {
+export function contrastRatio(a, b) {
   const la = relativeLuminance(a);
   const lb = relativeLuminance(b);
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
@@ -154,224 +140,249 @@ function contrastRatio(a, b) {
 /**
  * The border a swatch needs, or null when it needs none.
  *
- * A uniform border is the wrong default: it leaves a near-black swatch reading
- * as a hole in the panel while adding a line to colours that were already
- * distinct. Draw an edge only when the swatch cannot be told from the panel,
- * and push it away from the swatch's own luminance so the edge itself shows.
+ * A uniform border is the wrong default: it adds a line to colours that were
+ * already distinct. Draw an edge only when the swatch cannot be told from the
+ * panel, and push it away from the swatch's own luminance so the edge shows.
  */
 export function edgeFor(hex, panel = PANEL) {
   if (contrastRatio(hex, panel) >= EDGE_THRESHOLD) return null;
   return relativeLuminance(hex) < relativeLuminance(panel)
-    ? 'rgba(255, 255, 255, 0.38)'
-    : 'rgba(0, 0, 0, 0.45)';
-}
-
-function rgba(hex, alpha) {
-  const [r, g, b] = hexToRgb(hex).map(value => Math.round(value * 255));
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    ? 'rgba(255, 255, 255, 0.5)'
+    : 'rgba(41, 45, 50, 0.32)';
 }
 
 const isHex = value => /^#[0-9a-f]{6}$/i.test(String(value ?? '').trim());
 
 export const COLOR_PICKER_CSS = `
 [data-redline-picker] {
-  inline-size: 15.5rem;
-  background: #181b22;
-  color: #e8eaed;
+  inline-size: 17.5rem;
+  max-inline-size: calc(100vw - 1.5rem);
+  background: #FFFFFF;
+  color: #292D32;
   font: 400 0.8125rem/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 [data-redline-picker] [data-tabs] {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  background: #11141a;
+  gap: 0.125rem;
+  padding: 0.25rem 0.375rem 0;
+  border-bottom: 1px solid #D9D5CC;
+  background: #F7F5F0;
 }
 [data-redline-picker] [data-tabs] button {
   appearance: none;
   background: transparent;
   border: 0;
   border-bottom: 2px solid transparent;
-  color: #9aa2b0;
+  color: #5B5F66;
   cursor: pointer;
-  font: 500 0.75rem/1 inherit;
+  font: 600 0.75rem/1 system-ui, -apple-system, "Segoe UI", sans-serif;
   min-height: 2.25rem;
-  padding: 0;
+  padding: 0 0.25rem;
 }
-[data-redline-picker] [data-tabs] button:hover {
-  color: #e8eaed;
-}
+[data-redline-picker] [data-tabs] button:hover { color: #292D32; }
 [data-redline-picker] [data-tabs] button[aria-selected="true"] {
-  background: #181b22;
-  border-bottom-color: #8ab4f8;
-  color: #e8eaed;
+  border-bottom-color: #9A4650;
+  color: #292D32;
 }
 [data-redline-picker] [data-body] {
   display: grid;
-  gap: 0.6rem;
-  padding: 0.6rem;
+  gap: 0.75rem;
+  max-block-size: min(22rem, calc(100vh - 12rem));
+  overflow: auto;
+  padding: 0.75rem;
 }
-[data-redline-picker] [data-group] {
-  display: grid;
-  gap: 0.3rem;
-}
+[data-redline-picker] [data-group] { display: grid; gap: 0.375rem; }
 [data-redline-picker] [data-group] > h4 {
-  align-items: center;
-  color: #6c7382;
-  display: grid;
-  font: 500 0.625rem/1 inherit;
-  gap: 0.4rem;
-  grid-template-columns: auto minmax(0, 1fr);
-  letter-spacing: 0.09em;
+  color: #5B5F66;
+  font: 600 0.6875rem/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
   margin: 0;
-  text-transform: uppercase;
-}
-[data-redline-picker] [data-group] > h4::after {
-  background: #23272f;
-  content: "";
-  height: 1px;
 }
 [data-redline-picker] [data-grid] {
   display: grid;
-  gap: 0.2rem;
+  gap: 0.25rem;
   grid-template-columns: repeat(var(--cols, 8), minmax(0, 1fr));
   list-style: none;
   margin: 0;
   padding: 0;
 }
+[data-redline-picker] [data-grid][data-presets] { gap: 0.375rem; }
 [data-redline-picker] button[data-color] {
   aspect-ratio: 1;
   min-width: 0;
   padding: 0;
   border: 0;
-  border-radius: 2px;
+  border-radius: 3px;
   background: var(--swatch);
   cursor: pointer;
 }
-/* Only the swatches that need separating from the panel get an edge. */
-[data-redline-picker] button[data-color][data-edge] {
-  box-shadow: inset 0 0 0 1px var(--edge);
-}
-[data-redline-picker] [data-outline-toggle] {
+[data-redline-picker] button[data-color][data-edge] { box-shadow: inset 0 0 0 1px var(--edge); }
+[data-redline-picker] button[data-preset] {
+  aspect-ratio: auto;
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.2rem;
+  grid-template-columns: 1.75rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  background: #FFFFFF;
+  border: 1px solid #D9D5CC;
+  border-radius: 6px;
+  color: #292D32;
+  text-align: start;
+  font: 600 0.8125rem/1.1 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-[data-redline-picker] [data-outline-toggle] button {
-  appearance: none;
-  background: #11141a;
-  border: 1px solid #2c313b;
-  border-radius: 2px;
-  color: #9aa2b0;
-  cursor: pointer;
-  font: 500 0.6875rem/1 inherit;
-  padding: 0.35rem 0;
+[data-redline-picker] button[data-preset] > span:first-child {
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  border-radius: 4px;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px var(--edge, transparent);
 }
-[data-redline-picker] [data-outline-toggle] button:hover {
-  border-color: #4a5160;
-  color: #e8eaed;
+[data-redline-picker] button[data-preset] small {
+  display: block;
+  color: #5B5F66;
+  font: 400 0.6875rem/1.2 ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
-[data-redline-picker] [data-outline-toggle] button[aria-pressed="true"] {
-  background: #2b3547;
-  border-color: #8ab4f8;
-  color: #e8eaed;
-}
-[data-redline-picker] button[data-style-cell] {
-  aspect-ratio: 1;
-  background: #11141a;
-  border: 1px solid #23272f;
-  border-radius: 2px;
-  cursor: pointer;
-  display: grid;
-  min-width: 0;
-  padding: 3px;
-}
-/* With no outline and no fill a cell would paint nothing, so it is not offered. */
-[data-redline-picker] button[data-style-cell]:disabled {
-  cursor: default;
-  opacity: 0.25;
-}
-[data-redline-picker] button[data-style-cell] > span {
-  background: var(--cell-fill, transparent);
-  border: 2px solid var(--cell-stroke);
-  border-radius: 1px;
-  /* Same contrast rule as the swatches: a near-black stroke would otherwise
-     vanish into the cell's own dark ground. */
-  box-shadow: 0 0 0 1px var(--cell-edge, transparent);
-}
-[data-redline-picker] button[data-style-cell][data-no-outline] > span {
-  border-color: transparent;
-  box-shadow: none;
-}
-[data-redline-picker] button[data-color]:hover,
-[data-redline-picker] button[data-color]:focus-visible {
-  outline: 2px solid #8ab4f8;
-  outline-offset: 1px;
+[data-redline-picker] button[data-preset]:hover { border-color: #B9B3A7; background: #FBFAF7; }
+[data-redline-picker] button[data-color]:focus-visible,
+[data-redline-picker] [data-tabs] button:focus-visible,
+[data-redline-picker] input:focus-visible,
+[data-redline-picker] [data-apply]:focus-visible {
+  outline: 2px solid #2F6DB5;
+  outline-offset: 2px;
   position: relative;
   z-index: 1;
 }
-[data-redline-picker] button[data-color][data-selected] {
-  outline: 2px solid #e8eaed;
-  outline-offset: 1px;
+[data-redline-picker] button[data-color][aria-pressed="true"] {
+  outline: 2px solid #292D32;
+  outline-offset: 2px;
   position: relative;
-  z-index: 1;
 }
-[data-redline-picker] button[data-color]:not([data-style-cell])[data-selected] {
-  box-shadow: inset 0 0 0 2px #181b22;
+[data-redline-picker] button[data-preset][aria-pressed="true"] {
+  outline: none;
+  border-color: #9A4650;
+  box-shadow: 0 0 0 1px #9A4650;
 }
 [data-redline-picker] [data-custom] {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.5rem;
   align-items: center;
 }
 [data-redline-picker] input[type="color"] {
-  width: 2.5rem;
-  height: 1.75rem;
+  width: 2.75rem;
+  height: 2rem;
   padding: 0;
-  border: 1px solid #4a4f5a;
-  border-radius: 2px;
-  background: #11141a;
+  border: 1px solid #D9D5CC;
+  border-radius: 4px;
+  background: #FFFFFF;
+  cursor: pointer;
+}
+[data-redline-picker] input[data-hex] {
+  min-width: 0;
+  height: 2rem;
+  padding: 0 0.5rem;
+  border: 1px solid #D9D5CC;
+  border-radius: 4px;
+  background: #FFFFFF;
+  color: #292D32;
+  font: 400 0.8125rem/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+[data-redline-picker] input[data-hex][aria-invalid="true"] { border-color: #B3261E; }
+[data-redline-picker] [data-apply] {
+  height: 2rem;
+  padding: 0 0.75rem;
+  border: 1px solid #9A4650;
+  border-radius: 4px;
+  background: #9A4650;
+  color: #FFFFFF;
+  font: 600 0.75rem/1 system-ui, -apple-system, "Segoe UI", sans-serif;
   cursor: pointer;
 }
 [data-redline-picker] [data-note] {
-  color: #6c7382;
+  color: #5B5F66;
   font-size: 0.6875rem;
   line-height: 1.45;
   margin: 0;
 }
 [data-redline-picker] [data-foot] {
   align-items: center;
-  background: #11141a;
-  border-top: 1px solid #23272f;
+  background: #F7F5F0;
+  border-top: 1px solid #D9D5CC;
   display: grid;
   gap: 0.5rem;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-height: 2.25rem;
-  padding: 0 0.6rem;
+  padding: 0 0.75rem;
+}
+[data-redline-picker] [data-foot] > span:first-child {
+  inline-size: 1rem;
+  block-size: 1rem;
+  border-radius: 3px;
+  background: var(--swatch);
+  box-shadow: inset 0 0 0 1px rgba(41, 45, 50, 0.32);
 }
 [data-redline-picker] output {
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 0.6875rem;
-  color: #9aa2b0;
+  font-size: 0.75rem;
+  color: #292D32;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 [data-redline-picker] [data-chip] {
-  background: #21252e;
-  border: 1px solid #2c313b;
+  background: #FFFFFF;
+  border: 1px solid #D9D5CC;
   border-radius: 999px;
-  color: #e8eaed;
-  font: 500 0.625rem/1 inherit;
+  color: #292D32;
+  font: 600 0.6875rem/1 system-ui, -apple-system, "Segoe UI", sans-serif;
   padding: 0.25rem 0.5rem;
 }
 `;
 
+/** Arrow-key navigation over a grid of buttons with a single Tab stop. */
+function rovingGrid(grid, columns) {
+  const items = () => [...grid.querySelectorAll('button')];
+  const list = items();
+  const active = list.find(item => item.getAttribute('aria-pressed') === 'true') ?? list[0];
+  list.forEach(item => { item.tabIndex = item === active ? 0 : -1; });
+  grid.addEventListener('keydown', event => {
+    const all = items();
+    const index = all.indexOf(event.target);
+    if (index < 0) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      // Activate on keydown and suppress the key's default activation: picking
+      // closes the popover and returns focus to its trigger, which the same
+      // keystroke would otherwise activate again.
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) event.target.click();
+      return;
+    }
+    const moves = {
+      ArrowRight: index + 1,
+      ArrowLeft: index - 1,
+      ArrowDown: index + columns,
+      ArrowUp: index - columns,
+      Home: 0,
+      End: all.length - 1,
+    };
+    if (!(event.key in moves)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = all[Math.min(all.length - 1, Math.max(0, moves[event.key]))];
+    all.forEach(item => { item.tabIndex = item === next ? 0 : -1; });
+    next.focus();
+  });
+}
+
 /**
- * Build the colour and style control.
+ * Build the colour control.
  *
- * The returned element exposes `value` for the stroke colour and
- * `annotationStyle` for the whole treatment, so the overlay can seed and read
- * either. `annotationStyle` avoids the name `style`, which would shadow the
- * element's own CSS declaration.
+ * The returned element exposes `value` for the colour and `annotationStyle`
+ * for `{ color, intent }`, so the overlay can seed and read either.
  *
  * @returns {HTMLElement}
  */
@@ -379,44 +390,41 @@ export function createColorPicker() {
   const root = document.createElement('div');
   root.dataset.redlinePicker = '';
   root.setAttribute('role', 'group');
+  root.setAttribute('aria-label', 'Colour picker');
 
   const tabStrip = document.createElement('div');
   tabStrip.dataset.tabs = '';
   tabStrip.setAttribute('role', 'tablist');
-  tabStrip.setAttribute('aria-label', 'Colour picker modes');
+  tabStrip.setAttribute('aria-label', 'Colour sets');
 
   const body = document.createElement('div');
   body.dataset.body = '';
+  body.setAttribute('role', 'tabpanel');
+  body.id = `redline-picker-panel-${Math.random().toString(36).slice(2, 10)}`;
 
   const foot = document.createElement('div');
   foot.dataset.foot = '';
+  const footSwatch = document.createElement('span');
+  footSwatch.setAttribute('aria-hidden', 'true');
   const readout = document.createElement('output');
   const chip = document.createElement('span');
   chip.dataset.chip = '';
-  foot.append(readout, chip);
+  foot.append(footSwatch, readout, chip);
 
   root.append(tabStrip, body, foot);
 
-  const current = {
-    color: PALETTE[0].hex,
-    fill: null,
-    fillOpacity: 0,
-    outline: true,
-    intent: PALETTE[0].intent,
-  };
-  let activeTab = 'theme';
+  const current = { color: PALETTE[0].hex, intent: PALETTE[0].intent };
+  let activeTab = 'presets';
 
   const sameColor = (a, b) => String(a).toUpperCase() === String(b).toUpperCase();
 
   function commit(next, { close = true } = {}) {
     Object.assign(current, next);
-    paint();
-    if (!close) return;
-    root.dispatchEvent(new CustomEvent('wb-change', {
-      bubbles: true,
-      composed: true,
-      detail: { ...current },
-    }));
+    if (!close) {
+      paint();
+      return;
+    }
+    root.dispatchEvent(new CustomEvent('wb-change', { bubbles: true, composed: false, detail: { ...current } }));
   }
 
   function group(title) {
@@ -428,18 +436,16 @@ export function createColorPicker() {
     return wrapper;
   }
 
-  function grid(columns) {
-    const node = document.createElement('menu');
+  function grid(columns, label) {
+    const node = document.createElement('div');
     node.dataset.grid = '';
+    node.setAttribute('role', 'group');
+    node.setAttribute('aria-label', label);
     node.style.setProperty('--cols', String(columns));
     return node;
   }
 
-  /**
-   * A plain colour swatch. It carries no `data-fill-opacity`, so picking one
-   * changes the colour and leaves the fill treatment as it was.
-   */
-  function swatch(hex, { name, intent } = {}) {
+  function swatch(hex, { name, intent = null } = {}) {
     const button = document.createElement('button');
     button.type = 'button';
     button.dataset.color = hex;
@@ -452,163 +458,130 @@ export function createColorPicker() {
     }
     button.title = name ? `${name} · ${hex}` : hex;
     button.setAttribute('aria-label', button.title);
-    button.addEventListener('click', () => {
-      commit({ color: hex, intent: intent ?? null });
-    });
+    button.setAttribute('aria-pressed', String(sameColor(hex, current.color)));
+    button.addEventListener('click', () => commit({ color: hex, intent }));
     return button;
   }
 
-  /**
-   * One gallery cell, previewing the treatment it applies.
-   *
-   * The preview is the point: an outlined cell, two translucent ones and a
-   * solid one say what the click will do without a legend.
-   */
-  function styleCell(entry, style) {
-    const stroke = style.strokeShade === null ? entry.hex : variantFor(entry.hex, style.strokeShade);
-    const fillOpacity = style.fillOpacity;
-    // The outline toggle is a modifier on the whole gallery, so each cell shows
-    // the treatment it would actually apply right now.
-    const outline = current.outline;
-    const paintsNothing = !outline && fillOpacity === 0;
-
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.dataset.styleCell = style.key;
-    button.dataset.color = stroke;
-    button.dataset.intent = entry.intent;
-    button.dataset.fillOpacity = String(fillOpacity);
-    button.dataset.outline = String(outline);
-    if (fillOpacity > 0) button.dataset.fill = entry.hex;
-    if (!outline) button.dataset.noOutline = '';
-    button.disabled = paintsNothing;
-    button.style.setProperty('--cell-stroke', stroke);
-    if (fillOpacity > 0) button.style.setProperty('--cell-fill', rgba(entry.hex, fillOpacity));
-    const cellEdge = edgeFor(stroke, CELL_GROUND);
-    if (cellEdge) button.style.setProperty('--cell-edge', cellEdge);
-    const treatment = outline ? style.label : `${style.label}, no outline`;
-    button.title = paintsNothing ? 'Nothing to paint' : `${entry.name} · ${treatment}`;
-    button.setAttribute('aria-label', button.title);
-    button.appendChild(document.createElement('span'));
-
-    button.addEventListener('click', () => {
-      commit({
-        color: stroke,
-        fill: fillOpacity > 0 ? entry.hex : null,
-        fillOpacity,
-        outline,
-        intent: entry.intent,
-      });
-    });
+  function preset(entry) {
+    const button = swatch(entry.hex, { name: entry.name, intent: entry.intent });
+    button.dataset.preset = entry.intent;
+    button.removeAttribute('data-edge');
+    button.setAttribute('aria-pressed', String(sameColor(entry.hex, current.color) && current.intent === entry.intent));
+    const chipSwatch = document.createElement('span');
+    const edge = edgeFor(entry.hex);
+    if (edge) chipSwatch.style.setProperty('--edge', edge);
+    const text = document.createElement('span');
+    text.textContent = entry.name;
+    const hex = document.createElement('small');
+    hex.textContent = entry.hex;
+    text.appendChild(hex);
+    button.append(chipSwatch, text);
     return button;
   }
 
-  /**
-   * Fill strength and outline are independent axes, the way PowerPoint splits
-   * Shape Fill from Shape Outline. This toggle does not commit on its own: the
-   * gallery stays the one place a style is applied, so the cells repaint to
-   * show what the next click will do.
-   */
-  function outlineToggle() {
-    const wrapper = document.createElement('div');
-    wrapper.dataset.outlineToggle = '';
-    for (const [label, value] of [['Outline', true], ['No outline', false]]) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = label;
-      button.setAttribute('aria-pressed', String(current.outline === value));
-      button.addEventListener('click', () => {
-        if (current.outline === value) return;
-        // Dropping the outline with no fill set would leave nothing to paint,
-        // so a fill comes along with it rather than offering a dead state.
-        const patch = { outline: value };
-        if (!value && !current.fillOpacity) {
-          patch.fillOpacity = 0.5;
-          patch.fill = null;
-        }
-        commit(patch, { close: false });
-      });
-      wrapper.appendChild(button);
-    }
-    return wrapper;
+  function buildPresets() {
+    const presets = group('Named styles');
+    const presetGrid = grid(2, 'Named styles');
+    presetGrid.dataset.presets = '';
+    for (const entry of PALETTE) presetGrid.appendChild(preset(entry));
+    presets.appendChild(presetGrid);
+    body.appendChild(presets);
+    rovingGrid(presetGrid, 2);
   }
 
-  function buildTheme() {
-    const gallery = group('Shape styles');
-    gallery.appendChild(outlineToggle());
-    for (const style of STYLES) {
-      const row = grid(PALETTE.length);
-      for (const entry of PALETTE) row.appendChild(styleCell(entry, style));
-      gallery.appendChild(row);
-    }
-    body.appendChild(gallery);
+  function buildMore() {
+    const note = document.createElement('p');
+    note.dataset.note = '';
+    note.textContent = 'Every swatch is a solid colour. Lighter tints are not see-through; set transparency with Fill opacity.';
+    body.appendChild(note);
 
-    const ramp = group('Tints and shades');
-    const rampGrid = grid(PALETTE.length);
+    const themed = group('Tints and shades of the named styles');
+    const themedGrid = grid(PALETTE.length, 'Tints and shades of the named styles');
     for (let row = 0; row < 5; row += 1) {
       for (const entry of PALETTE) {
-        rampGrid.appendChild(swatch(variantFor(entry.hex, row), {
-          name: `${entry.name} ${row < 3 ? 'tint' : 'shade'}`,
+        themedGrid.appendChild(swatch(variantFor(entry.hex, row), {
+          name: `${entry.name} ${row < 3 ? 'tint' : 'shade'} ${row + 1}`,
           intent: entry.intent,
         }));
       }
     }
-    ramp.appendChild(rampGrid);
-    body.appendChild(ramp);
-  }
+    themed.appendChild(themedGrid);
+    body.appendChild(themed);
+    rovingGrid(themedGrid, PALETTE.length);
 
-  function buildStandard() {
     const standard = group('Standard colours');
-    const standardGrid = grid(STANDARD_COLORS.length);
+    const standardGrid = grid(STANDARD_COLORS.length, 'Standard colours with tints and shades');
     for (const hex of STANDARD_COLORS) standardGrid.appendChild(swatch(hex));
+    for (let row = 0; row < 5; row += 1) {
+      for (const hex of STANDARD_COLORS) standardGrid.appendChild(swatch(variantFor(hex, row)));
+    }
     standard.appendChild(standardGrid);
     body.appendChild(standard);
-
-    const ramp = group('Tints and shades');
-    const rampGrid = grid(STANDARD_COLORS.length);
-    for (let row = 0; row < 5; row += 1) {
-      for (const hex of STANDARD_COLORS) rampGrid.appendChild(swatch(variantFor(hex, row)));
-    }
-    ramp.appendChild(rampGrid);
-    body.appendChild(ramp);
+    rovingGrid(standardGrid, STANDARD_COLORS.length);
   }
 
   function buildCustom() {
-    const wrapper = group('Custom');
+    const wrapper = group('Custom colour');
     const row = document.createElement('div');
     row.dataset.custom = '';
 
     const field = document.createElement('input');
     field.type = 'color';
     field.value = current.color.toLowerCase();
-    field.setAttribute('aria-label', 'Custom annotation colour');
+    field.setAttribute('aria-label', 'Custom colour');
 
-    const hex = document.createElement('output');
-    hex.textContent = current.color.toUpperCase();
+    const hexField = document.createElement('input');
+    hexField.type = 'text';
+    hexField.dataset.hex = '';
+    hexField.value = current.color.toUpperCase();
+    hexField.maxLength = 7;
+    hexField.spellcheck = false;
+    hexField.setAttribute('aria-label', 'Hex colour, for example #1F6FEB');
 
+    const apply = document.createElement('button');
+    apply.type = 'button';
+    apply.dataset.apply = '';
+    apply.textContent = 'Apply';
+
+    const applyHex = () => {
+      const value = hexField.value.trim().startsWith('#') ? hexField.value.trim() : `#${hexField.value.trim()}`;
+      if (!isHex(value)) {
+        hexField.setAttribute('aria-invalid', 'true');
+        hexField.focus();
+        return;
+      }
+      commit({ color: value.toUpperCase(), intent: null });
+    };
     // The native input fires `input` continuously while dragging; only `change`
     // means the user settled on a colour, which is what should commit.
     field.addEventListener('input', () => {
-      hex.textContent = field.value.toUpperCase();
+      hexField.value = field.value.toUpperCase();
+      hexField.removeAttribute('aria-invalid');
     });
-    field.addEventListener('change', () => {
-      commit({ color: field.value.toUpperCase(), intent: null });
+    field.addEventListener('change', () => commit({ color: field.value.toUpperCase(), intent: null }));
+    hexField.addEventListener('input', () => hexField.removeAttribute('aria-invalid'));
+    hexField.addEventListener('keydown', event => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyHex();
+      }
+    });
+    apply.addEventListener('click', applyHex);
+    apply.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      if (!event.repeat) applyHex();
     });
 
-    row.append(field, hex);
+    row.append(field, hexField, apply);
     wrapper.appendChild(row);
-
-    const note = document.createElement('p');
-    note.dataset.note = '';
-    note.textContent = 'Keeps the current fill treatment. Pick a gallery cell to change it.';
-    wrapper.appendChild(note);
-
     body.appendChild(wrapper);
   }
 
   const TABS = [
-    ['theme', 'Theme', buildTheme],
-    ['standard', 'Standard', buildStandard],
+    ['presets', 'Presets', buildPresets],
+    ['more', 'More colors', buildMore],
     ['custom', 'Custom', buildCustom],
   ];
 
@@ -617,40 +590,43 @@ export function createColorPicker() {
     button.type = 'button';
     button.setAttribute('role', 'tab');
     button.dataset.tab = key;
+    button.id = `${body.id}-${key}`;
+    button.setAttribute('aria-controls', body.id);
     button.textContent = label;
-    button.addEventListener('click', () => {
-      activeTab = key;
-      paint();
-    });
+    button.addEventListener('click', () => activate(key));
     tabStrip.appendChild(button);
     return button;
   });
 
+  function activate(key, { focus = false } = {}) {
+    activeTab = key;
+    paint();
+    if (focus) tabButtons.find(button => button.dataset.tab === key)?.focus();
+  }
+
+  tabStrip.addEventListener('keydown', event => {
+    const index = tabButtons.indexOf(event.target);
+    if (index < 0) return;
+    const moves = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabButtons.length - 1 };
+    if (!(event.key in moves)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const next = tabButtons[(moves[event.key] + tabButtons.length) % tabButtons.length];
+    activate(next.dataset.tab, { focus: true });
+  });
+
   function paint() {
-    const build = TABS.find(([key]) => key === activeTab)?.[2] ?? buildTheme;
+    const build = TABS.find(([key]) => key === activeTab)?.[2] ?? buildPresets;
     body.replaceChildren();
     build();
-
     for (const button of tabButtons) {
-      button.setAttribute('aria-selected', String(button.dataset.tab === activeTab));
-      button.tabIndex = button.dataset.tab === activeTab ? 0 : -1;
+      const selected = button.dataset.tab === activeTab;
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+      if (selected) body.setAttribute('aria-labelledby', button.id);
     }
-
-    for (const node of body.querySelectorAll('button[data-color]')) {
-      const isCell = 'styleCell' in node.dataset;
-      const matches = isCell
-        ? sameColor(node.dataset.color, current.color)
-          && Number(node.dataset.fillOpacity) === current.fillOpacity
-          && (node.dataset.outline === 'true') === current.outline
-        : sameColor(node.dataset.color, current.color) && !current.fillOpacity;
-      node.toggleAttribute('data-selected', matches);
-    }
-
-    const treatment = STYLES.find(style => style.fillOpacity === current.fillOpacity);
-    const parts = [current.color.toUpperCase()];
-    if (current.fillOpacity) parts.push(treatment?.label ?? `${current.fillOpacity * 100}% fill`);
-    if (!current.outline) parts.push('no outline');
-    readout.textContent = parts.join(' · ');
+    footSwatch.style.setProperty('--swatch', current.color);
+    readout.textContent = current.color.toUpperCase();
     const named = PALETTE.find(entry => entry.intent === current.intent);
     chip.textContent = named?.name ?? 'Custom';
   }
@@ -670,13 +646,15 @@ export function createColorPicker() {
       if (!next || typeof next !== 'object') return;
       const patch = {};
       if (isHex(next.color)) patch.color = String(next.color).trim().toUpperCase();
-      if (Number.isFinite(Number(next.fillOpacity))) patch.fillOpacity = clamp01(Number(next.fillOpacity));
-      if (isHex(next.fill)) patch.fill = String(next.fill).trim().toUpperCase();
-      else if (next.fill === null) patch.fill = null;
-      if (typeof next.outline === 'boolean') patch.outline = next.outline;
       if (typeof next.intent === 'string' || next.intent === null) patch.intent = next.intent;
       commit(patch, { close: false });
     },
+    configurable: true,
+  });
+
+  /** The control that should take focus when the picker opens. */
+  Object.defineProperty(root, 'initialFocus', {
+    get: () => body.querySelector('button[tabindex="0"], input') ?? tabButtons.find(button => button.tabIndex === 0),
     configurable: true,
   });
 

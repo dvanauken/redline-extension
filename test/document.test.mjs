@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RedlineDocument } from '../redline/RedlineDocument.js';
+import { RedlineDocument, HISTORY_LIMIT } from '../redline/RedlineDocument.js';
 const mark = id => ({ id, type: 'line', start: { x: 10, y: 20 }, end: { x: 200, y: 100 } });
 
 for (const [label, data] of [
@@ -124,4 +124,100 @@ test('an outline is only dropped when asked for explicitly', () => {
   for (const [id, outline] of [['a', true], ['b', undefined], ['c', 'false'], ['d', 0]]) {
     assert.equal('outline' in doc.add(box({ id, fillOpacity: 0.5, outline })), false);
   }
+});
+
+test('an ellipse keeps its box and treatment through a round trip', () => {
+  const doc = new RedlineDocument();
+  const added = doc.add({ id: 'e', type: 'ellipse', color: '#7C3AED', fill: '#FDE68A', fillOpacity: 0.1, outline: false,
+    start: { x: 5, y: 6 }, end: { x: 60, y: 30 } });
+  assert.equal(added.fillOpacity, 0.1);
+  assert.equal(added.outline, false);
+  const reloaded = new RedlineDocument();
+  reloaded.load(doc.toJSON());
+  assert.deepEqual(reloaded.annotations[0], added);
+});
+
+test('legacy arrows and lines serialise exactly as before', () => {
+  const doc = new RedlineDocument();
+  const arrow = doc.add({ ...mark('a'), type: 'arrow' });
+  const line = doc.add(mark('l'));
+  assert.deepEqual(Object.keys(arrow).sort(), ['color', 'end', 'id', 'start', 'type', 'width']);
+  assert.deepEqual(Object.keys(line).sort(), ['color', 'end', 'id', 'start', 'type', 'width']);
+});
+
+test('end decorations are validated, stored only when not the default, and canonicalised', () => {
+  const doc = new RedlineDocument();
+  assert.equal(doc.add({ ...mark('one'), endDecoration: 'arrow' }).type, 'arrow');
+  const both = doc.add({ ...mark('both'), startDecoration: 'arrow', endDecoration: 'arrow' });
+  assert.deepEqual([both.type, both.startDecoration, both.endDecoration], ['line', 'arrow', 'arrow']);
+  const bare = doc.add({ ...mark('bare'), type: 'arrow', endDecoration: 'none' });
+  assert.equal(bare.type, 'line');
+  assert.equal('endDecoration' in bare, false);
+  const poly = doc.add({ id: 'p', type: 'polyline', points: [{ x: 0, y: 0 }, { x: 4, y: 4 }], startDecoration: 'open-circle' });
+  assert.equal(poly.startDecoration, 'open-circle');
+});
+
+test('an unknown decoration value rejects the whole import atomically', () => {
+  const doc = new RedlineDocument({ width: 100, height: 100 });
+  doc.add(mark('keep'));
+  const before = doc.toJSON();
+  assert.throws(() => doc.load({ width: 100, height: 100, annotations: [{ ...mark('bad'), endDecoration: 'rocket' }] }), /decoration/);
+  assert.deepEqual(doc.toJSON(), before);
+  assert.equal(doc.canUndo, true);
+});
+
+test('fields this version cannot keep are reported rather than silently dropped', () => {
+  const doc = new RedlineDocument();
+  const report = doc.load({
+    // `legend` was the example here before Phase 2 made it a supported field.
+    width: 100, height: 100, theme: { dark: true },
+    annotations: [{ ...mark('x'), comment: 'hi' }, { id: 'r', type: 'rectangle', start: { x: 0, y: 0 }, end: { x: 5, y: 5 }, startDecoration: 'arrow' }],
+  });
+  assert.deepEqual(report.ignoredFields, ['document.theme', 'line.comment', 'rectangle.startDecoration']);
+  assert.equal('startDecoration' in doc.annotations[1], false);
+});
+
+test('older two-point polygons still load', () => {
+  const doc = new RedlineDocument();
+  doc.load({ width: 10, height: 10, annotations: [{ id: 'g', type: 'polygon', points: [{ x: 0, y: 0 }, { x: 5, y: 5 }] }] });
+  assert.equal(doc.annotations[0].points.length, 2);
+});
+
+test('stored marks are immutable while exported copies stay editable', () => {
+  const doc = new RedlineDocument();
+  doc.add(mark('frozen'));
+  assert.equal(Object.isFrozen(doc.marks[0]), true);
+  assert.equal(Object.isFrozen(doc.marks[0].start), true);
+  const copy = doc.annotations[0];
+  copy.start.x = 999;
+  assert.equal(doc.marks[0].start.x, 10);
+});
+
+test('undo history is bounded and shares unchanged marks', () => {
+  const doc = new RedlineDocument();
+  for (let i = 0; i < HISTORY_LIMIT + 50; i++) doc.add(mark('m' + i));
+  let steps = 0;
+  while (doc.undo()) steps += 1;
+  assert.equal(steps, HISTORY_LIMIT);
+  assert.equal(doc.annotations.length, 50);
+  const shared = new RedlineDocument();
+  shared.add(mark('a'));
+  const first = shared.marks[0];
+  shared.add(mark('b'));
+  assert.equal(shared.marks[0], first, 'an untouched mark is not copied per edit');
+});
+
+test('edits sharing a merge key form one undo step until the run is broken', () => {
+  const doc = new RedlineDocument();
+  doc.add(mark('n'));
+  for (let x = 1; x <= 5; x++) doc.replace('n', { ...mark('n'), start: { x: 10 + x, y: 20 } }, { mergeKey: 'nudge:n:1' });
+  assert.equal(doc.annotations[0].start.x, 15);
+  doc.undo();
+  assert.equal(doc.annotations[0].start.x, 10);
+  doc.redo();
+  doc.replace('n', { ...mark('n'), start: { x: 30, y: 20 } }, { mergeKey: 'nudge:n:1' });
+  doc.breakMerge();
+  doc.replace('n', { ...mark('n'), start: { x: 40, y: 20 } }, { mergeKey: 'nudge:n:1' });
+  doc.undo();
+  assert.equal(doc.annotations[0].start.x, 30);
 });

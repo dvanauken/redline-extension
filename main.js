@@ -7,6 +7,10 @@
  * that role: shadow-DOM isolation instead of an app shell, extension capture
  * instead of an app renderer, and native <dialog> instead of an app dialog
  * service.
+ *
+ * Reload-recovery drafts go to the service worker, which keeps them in
+ * extension-owned session storage under this tab and an opaque page identity.
+ * Nothing is written to the website's storage.
  */
 
 import { RedlineOverlay } from './redline/index.js';
@@ -14,6 +18,7 @@ import { HostDialogs, HOST_DIALOG_CSS } from './host-dialogs.js';
 import { createColorPicker, COLOR_PICKER_CSS } from './color-picker.js';
 
 const CAPTURE_MESSAGE = 'redline:capture';
+const DRAFT_MESSAGE = 'redline:draft:';
 const PREFERENCES_KEY = 'redline.preferences';
 
 /**
@@ -28,11 +33,12 @@ const BASE_CSS = `
 :host { all: initial; }
 [data-redline-root],
 dialog[data-dialog="redline-color"],
+dialog[data-redline-preview],
 dialog[data-redline-host-dialog] {
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 0.875rem;
   line-height: 1.5;
-  color: #e8eaed;
+  color: #292D32;
   text-align: start;
   box-sizing: border-box;
 }
@@ -46,10 +52,11 @@ dialog[data-redline-host-dialog] {
   max-width: min(32rem, calc(100vw - 2rem));
   padding: 0.5rem 0.9rem;
   border-radius: 0.375rem;
-  background: rgba(17, 20, 26, 0.94);
-  color: #e8eaed;
+  border: 1px solid #D9D5CC;
+  background: #F7F5F0;
+  color: #292D32;
   font: 400 0.8125rem/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-  box-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 0.35);
+  box-shadow: 0 0.5rem 1.5rem rgb(41 45 50 / 0.18);
   pointer-events: none;
   opacity: 0;
   transition: opacity 150ms ease;
@@ -58,16 +65,39 @@ dialog[data-redline-host-dialog] {
 `;
 
 /** The page keeps its own scrollbar rules; this only applies while active. */
-const PAGE_CSS = 'body[data-redline-active] { overflow: hidden; }';
+const PAGE_CSS = 'body[data-redline-active] { overflow: hidden; } html[data-redline-scrollbar] { scrollbar-gutter: stable; }';
+
+/** Keep an existing scrollbar's space while locking input, so canvases do not resize. */
+function setPageLocked(locked) {
+  const html = document.documentElement;
+  if (locked) {
+    if (innerWidth > html.clientWidth && !getComputedStyle(html).scrollbarGutter.includes('stable')) {
+      html.setAttribute('data-redline-scrollbar', '');
+    }
+    document.body.setAttribute('data-redline-active', '');
+  } else {
+    document.body.removeAttribute('data-redline-active');
+    html.removeAttribute('data-redline-scrollbar');
+  }
+}
 
 /** @type {{overlay: RedlineOverlay, host: HTMLElement, pageSheet: CSSStyleSheet}|null} */
 let installation = null;
+/** The address the last draft was saved under, to notice same-document navigation. */
+let draftAddress = null;
 /** In-flight install, so a fast double-toggle cannot build two overlays. */
 let installing = null;
 
-/** Wait for the browser to actually paint the hidden overlay before capturing. */
+/**
+ * Wait for the browser to actually paint the hidden overlay before capturing.
+ * A tab hidden meanwhile gets no animation frames, so give up after a moment
+ * and let the visibility check reject the capture.
+ */
 function nextPaint() {
-  return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return Promise.race([
+    new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+    new Promise(resolve => setTimeout(resolve, 500)),
+  ]);
 }
 
 async function loadStyleSheet(cssText) {
@@ -88,19 +118,67 @@ async function fetchExtensionCss(path) {
  * This replaces the overlay's getDisplayMedia fallback, so the user never sees
  * a share picker. `activeTab` is already granted by the click or shortcut that
  * opened Redline.
+ *
+ * The worker only captures this tab while it is active, and rejects the image
+ * if another tab was activated or this one navigated during capture. This
+ * document adds its own check: if it was hidden or changed address while the
+ * worker captured, the image cannot be trusted to show this page.
  */
-async function capturePage() {
-  await nextPaint();
-  let response;
+async function capturePage(host) {
+  if (document.visibilityState !== 'visible') {
+    throw new Error('This tab is in the background, so nothing was captured. Switch to it and try again.');
+  }
+  const address = location.href;
+  let interrupted = false;
+  const onHidden = () => { if (document.visibilityState !== 'visible') interrupted = true; };
+  const onPageHide = () => { interrupted = true; };
+  document.addEventListener('visibilitychange', onHidden);
+  window.addEventListener('pagehide', onPageHide);
+  // Toasts and host dialogs live beside the overlay root. Hide the whole host
+  // for capture, then restore it even if the worker or screenshot fails.
+  const visibility = host.style.getPropertyValue('visibility');
+  const priority = host.style.getPropertyPriority('visibility');
+  host.style.setProperty('visibility', 'hidden', 'important');
   try {
-    response = await chrome.runtime.sendMessage({ type: CAPTURE_MESSAGE });
-  } catch (error) {
-    throw new Error(`The extension could not reach its background worker: ${error?.message ?? error}`);
+    await nextPaint();
+    if (interrupted || document.visibilityState !== 'visible') {
+      throw new Error('This tab was hidden before capture, so nothing was captured. Try again.');
+    }
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({ type: CAPTURE_MESSAGE, address });
+    } catch (error) {
+      throw new Error(`The extension could not reach its background worker: ${error?.message ?? error}`);
+    }
+    if (!response?.ok) {
+      throw new Error(response?.error ?? 'The browser refused to capture this tab.');
+    }
+    if (interrupted || document.visibilityState !== 'visible') {
+      throw new Error('This tab was switched away from during capture, so the screenshot was discarded. Nothing was exported; try again.');
+    }
+    if (location.href !== address) {
+      throw new Error('This page changed address during capture, so the screenshot was discarded. Nothing was exported; try again.');
+    }
+    return { dataUrl: response.dataUrl, scope: 'browser-tab' };
+  } finally {
+    document.removeEventListener('visibilitychange', onHidden);
+    window.removeEventListener('pagehide', onPageHide);
+    if (visibility) host.style.setProperty('visibility', visibility, priority);
+    else host.style.removeProperty('visibility');
   }
-  if (!response?.ok) {
-    throw new Error(response?.error ?? 'The browser refused to capture this tab.');
-  }
-  return { dataUrl: response.dataUrl, scope: 'browser-tab' };
+}
+
+/**
+ * Ask the service worker to load, save or discard this tab and page's draft.
+ * The worker takes the tab from the message sender. It keys the page by this
+ * document's current address, accepted only for the sender's own origin.
+ * Pages cannot message the extension at all (no externally_connectable).
+ */
+async function draftRequest(action, payload = {}) {
+  // The current address (after any history navigation); the worker checks its origin.
+  const response = await chrome.runtime.sendMessage({ type: DRAFT_MESSAGE + action, ...payload, address: location.href });
+  if (!response) throw new Error('The extension background worker did not answer.');
+  return response;
 }
 
 /**
@@ -182,16 +260,43 @@ async function install() {
     getContext,
     describePage,
     setStatus,
-    capturePage,
+    capturePage: () => capturePage(host),
     createColorPicker,
     preferences,
     savePreferences: value => chrome.storage.local.set({ [PREFERENCES_KEY]: value }),
+    dismissDialogs: () => dialogs.dismissAll(),
+    setPageLocked,
     requestText: (text, context) => dialogs.requestText(text, context),
     confirmClear: count => dialogs.confirm({
       title: 'Clear redline marks?',
       message: `Remove ${count} mark${count === 1 ? '' : 's'} from this page?`,
       confirmLabel: 'Clear',
     }),
+    confirm: options => dialogs.confirm(options),
+    loadDraft: async () => {
+      const response = await draftRequest('load');
+      if (!response.ok) throw new Error(response.error ?? 'Reload recovery is unavailable.');
+      return response.draft ?? null;
+    },
+    saveDraft: draft => {
+      // Recorded when sent, so a navigation while the save is in flight is still noticed.
+      draftAddress = location.href;
+      return draftRequest('save', { draft });
+    },
+    discardDraft: ({ sessionId } = {}) => draftRequest('discard', { sessionId }),
+    requestRecovery: summary => dialogs.recovery(summary),
+  });
+
+  // A fragment or history navigation keeps this document (and the marks) but
+  // changes the address a reload will use, so save the draft under it.
+  const addressChanged = () => {
+    if (draftAddress && draftAddress !== location.href) overlay.noteAddressChanged();
+  };
+  window.addEventListener('hashchange', addressChanged);
+  window.addEventListener('popstate', addressChanged);
+  // history.pushState fires no event; check once more as the page unloads.
+  window.addEventListener('pagehide', () => {
+    if (draftAddress && draftAddress !== location.href) overlay.noteAddressChanged({ now: true });
   });
 
   installation = { overlay, host, pageSheet };
@@ -214,6 +319,6 @@ export function destroyRedline() {
   overlay.destroy();
   host.remove();
   document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== pageSheet);
-  document.body.removeAttribute('data-redline-active');
+  setPageLocked(false);
   installation = null;
 }

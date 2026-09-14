@@ -1,11 +1,11 @@
 export async function checkToolbarPin({ page, evaluate, worker, check, waitUntil }) {
   const state = () => evaluate(() => {
     const sr = globalThis.__redlineTestRoot;
-    const toolbar = sr.querySelector('[data-redline-toolbar]');
+    const dock = sr.querySelector('[data-redline-dock]');
     const pin = sr.querySelector('[data-redline-pin]');
-    const rect = toolbar.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, pinned: toolbar.hasAttribute('data-pinned'),
-      positioned: toolbar.hasAttribute('data-positioned'), pressed: pin.getAttribute('aria-pressed'),
+    const rect = sr.querySelector('[data-redline-toolbar]').getBoundingClientRect();
+    return { x: rect.x, y: rect.y, pinned: dock.hasAttribute('data-pinned'),
+      positioned: dock.hasAttribute('data-positioned'), pressed: pin.getAttribute('aria-pressed'),
       active: pin.hasAttribute('data-active'), disabled: pin.disabled,
       background: getComputedStyle(pin).backgroundColor, label: pin.getAttribute('aria-label') };
   });

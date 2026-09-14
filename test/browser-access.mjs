@@ -35,6 +35,8 @@ export async function createOverlayAccess(context, page) {
         contextId: executionContextId,
         expression: "globalThis.__redlineTestRoot.querySelector('input[type=file]')",
       });
+      // Mirror chooseImport(), which clears the input so the same file can be chosen twice.
+      await session.send('Runtime.callFunctionOn', { objectId: result.objectId, functionDeclaration: "function() { this.value = ''; }" });
       try { await session.send('DOM.setFileInputFiles', { objectId: result.objectId, files: [file] }); }
       finally { await session.send('Runtime.releaseObject', { objectId: result.objectId }); }
     },
