@@ -1,19 +1,24 @@
 /**
- * In-place editor for text box marks.
+ * In-place editor for text boxes and labels attached to rectangles.
  *
  * A textarea over the box handles typing, IME and the clipboard. It uses the
- * shared font, padding and line height, so the committed text box reads the
- * way it did while typing; the committed box is drawn from the shared layout.
+ * shared font, padding and line height, so committed text reads the way it did
+ * while typing; rectangle labels keep their rectangle's existing geometry.
  *
  * Keys: Ctrl/Cmd+Enter saves, Escape cancels the edit without closing Redline,
  * and moving focus away saves.
+ *
+ * A rotated text box is edited in place, turned with it. As it grows, its
+ * upright top-left corner stays where it is on the page.
  */
 
 import {
-  REDLINE_FONT_FAMILY, TEXTBOX_LINE_HEIGHT, TEXTBOX_PADDING, fitTextBoxContent,
+  RECTANGLE_LABEL_PADDING, REDLINE_FONT_FAMILY, TEXTBOX_LINE_HEIGHT, TEXTBOX_PADDING,
+  fitTextBoxContent, layoutRectangleLabel,
 } from './RedlineTextLayout.js';
-import { redlineTextBoxFill } from './RedlineStyles.js';
-import { boxFromPoints } from './RedlineGeometry.js';
+import { rectangleLabelColor, redlineTextBoxFill } from './RedlineStyles.js';
+import { boxCenter, boxFromPoints, markRotation, rotatePoint } from './RedlineGeometry.js';
+import { keepCornerInPlace } from './RedlineTransform.js';
 
 export class RedlineTextEditor {
   constructor({ root, svg, measurer, getDocument, onFinish, onInput = () => {} }) {
@@ -35,13 +40,15 @@ export class RedlineTextEditor {
     return Boolean(this.session && (this.session.element === node || this.session.controls.contains(node)));
   }
 
-  start(mark, { creating = false } = {}) {
+  start(mark, { creating = false, initialText = null } = {}) {
+    const rectangleLabel = mark.type === 'rectangle';
     const editor = document.createElement('textarea');
     editor.dataset.redlineTextEditor = '';
-    editor.setAttribute('aria-label', 'Text box content');
-    editor.setAttribute('placeholder', 'Type here');
+    if (rectangleLabel) editor.dataset.redlineRectangleLabelEditor = '';
+    editor.setAttribute('aria-label', rectangleLabel ? 'Rectangle label' : 'Text box content');
+    editor.setAttribute('placeholder', rectangleLabel ? 'Type a label' : 'Type here');
     editor.spellcheck = true;
-    editor.value = mark.text ?? '';
+    editor.value = initialText ?? mark.text ?? '';
 
     const controls = document.createElement('div');
     controls.dataset.redlineTextControls = '';
@@ -60,7 +67,7 @@ export class RedlineTextEditor {
     controls.append(save, cancel);
     controls.addEventListener('pointerdown', event => event.preventDefault());
 
-    this.session = { element: editor, controls, mark, creating };
+    this.session = { element: editor, controls, mark, creating, rectangleLabel };
     this.root.append(editor, controls);
     this.position();
 
@@ -68,11 +75,11 @@ export class RedlineTextEditor {
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
-        this.finish({ commit: false });
+        this.finish({ commit: false, restoreFocus: true });
       } else if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
         event.preventDefault();
         event.stopPropagation();
-        this.finish({ commit: true });
+        this.finish({ commit: true, restoreFocus: true });
       }
     });
     editor.addEventListener('input', () => {
@@ -84,8 +91,8 @@ export class RedlineTextEditor {
         if (this.session?.element === editor) this.finish({ commit: true });
       });
     });
-    save.addEventListener('click', () => this.finish({ commit: true }));
-    cancel.addEventListener('click', () => this.finish({ commit: false }));
+    save.addEventListener('click', () => this.finish({ commit: true, restoreFocus: true }));
+    cancel.addEventListener('click', () => this.finish({ commit: false, restoreFocus: true }));
     editor.focus({ preventScroll: true });
     editor.setSelectionRange(editor.value.length, editor.value.length);
   }
@@ -95,34 +102,55 @@ export class RedlineTextEditor {
     const doc = this.getDocument();
     if (!session || !doc || !this.svg.isConnected) return;
     const original = boxFromPoints(session.mark.start, session.mark.end);
-    session.preview = fitTextBoxContent({ ...session.mark, text: session.element.value }, this.measurer, {
-      maxWidth: Math.min(600, doc.width - original.x),
-    });
+    let rectangleLayout = null;
+    if (session.rectangleLabel) {
+      session.preview = { ...session.mark, text: session.element.value };
+      rectangleLayout = layoutRectangleLabel(session.preview, this.measurer);
+    } else {
+      session.preview = keepCornerInPlace(session.mark, fitTextBoxContent({ ...session.mark, text: session.element.value }, this.measurer, {
+        maxWidth: Math.min(600, doc.width - original.x),
+      }));
+    }
     const box = boxFromPoints(session.preview.start, session.preview.end);
+    const rotation = markRotation(session.preview);
+    const corner = rotatePoint({ x: box.x, y: box.y }, boxCenter(box), rotation);
     const svgRect = this.svg.getBoundingClientRect();
     const rootRect = this.root.getBoundingClientRect();
     const scaleX = svgRect.width / Math.max(1, doc.width);
     const scaleY = svgRect.height / Math.max(1, doc.height);
-    const left = svgRect.left - rootRect.left + box.x * scaleX;
-    const top = svgRect.top - rootRect.top + box.y * scaleY;
-    const width = box.width * scaleX;
-    const height = box.height * scaleY;
+    let left = svgRect.left - rootRect.left + corner.x * scaleX;
+    let top = svgRect.top - rootRect.top + corner.y * scaleY;
+    let width = box.width * scaleX;
+    let height = box.height * scaleY;
     Object.assign(session.element.style, {
       left: `${left}px`,
       top: `${top}px`,
-      // Scale the entire editor, including glyph widths, exactly like SVG/PNG.
+      // Scale the entire editor, including glyph widths, exactly like SVG/PNG,
+      // turned about its corner as the SVG turns the box about its centre.
       width: `${box.width}px`,
       height: `${box.height}px`,
       transformOrigin: 'top left',
-      transform: `scale(${scaleX}, ${scaleY})`,
-      padding: `${TEXTBOX_PADDING}px`,
+      transform: `scale(${scaleX}, ${scaleY})${rotation ? ` rotate(${rotation}deg)` : ''}`,
+      padding: session.rectangleLabel
+        ? `${rectangleLayout.paddingTop}px ${RECTANGLE_LABEL_PADDING}px 0`
+        : `${TEXTBOX_PADDING}px`,
       fontFamily: REDLINE_FONT_FAMILY,
       fontSize: `${session.mark.fontSize ?? 16}px`,
       lineHeight: String(TEXTBOX_LINE_HEIGHT),
+      fontWeight: session.rectangleLabel ? '600' : '400',
+      textAlign: session.rectangleLabel ? 'center' : 'left',
+      color: session.rectangleLabel ? rectangleLabelColor(session.mark) : '#292D32',
       borderWidth: '0px',
       outline: '1px solid #6EA8FF',
-      backgroundColor: redlineTextBoxFill(session.mark.backgroundOpacity),
+      backgroundColor: session.rectangleLabel ? 'transparent' : redlineTextBoxFill(session.mark.backgroundOpacity),
     });
+    if (rotation) {
+      // Place the actions against the turned editor's on-screen extent.
+      const turned = session.element.getBoundingClientRect();
+      ({ width, height } = turned);
+      left = turned.left - rootRect.left;
+      top = turned.top - rootRect.top;
+    }
     const controlsRect = session.controls.getBoundingClientRect();
     const gutter = 8;
     const controlsLeft = Math.min(
@@ -138,7 +166,7 @@ export class RedlineTextEditor {
   }
 
   /** End the edit. Returns false when nothing was being edited. */
-  finish({ commit }) {
+  finish({ commit, restoreFocus = false }) {
     const session = this.session;
     if (!session) return false;
     this.position();
@@ -152,6 +180,7 @@ export class RedlineTextEditor {
       commit,
       text: session.element.value.trim(),
     });
+    if (restoreFocus) this.svg.focus({ preventScroll: true });
     return true;
   }
 }

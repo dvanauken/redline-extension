@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  baselineOffset, fitTextBoxContent, fitTextBoxHeight, fontString, layoutNote, layoutTextBox, wrapText, TEXTBOX_MIN_HEIGHT,
+  baselineOffset, fitTextBoxContent, fitTextBoxHeight, fontString, layoutNote, layoutRectangleLabel, layoutTextBox,
+  wrapText, TEXTBOX_MIN_HEIGHT,
 } from '../redline/RedlineTextLayout.js';
 
 /**
@@ -118,4 +119,14 @@ test('live fitting uses the remaining viewport width near the right edge', () =>
   const fitted = fitTextBoxContent(box('LongWord'.repeat(20)), measurer, { maxWidth: 120 });
   assert.equal(fitted.end.x - fitted.start.x, 120);
   assert.equal(layoutTextBox(fitted, measurer).overflows, false);
+});
+
+test('rectangle labels wrap and remain centred inside the existing geometry', () => {
+  const mark = { ...box('Direct text inside this rectangle', 180, 100), type: 'rectangle' };
+  const layout = layoutRectangleLabel(mark, measurer);
+  assert.equal(layout.box.width, 180);
+  assert.ok(layout.lines.length >= 2);
+  assert.ok(layout.lines.every(line => line.x === 100));
+  assert.ok(layout.lines[0].y > mark.start.y);
+  assert.deepEqual(layout.clip, { x: 10, y: 20, width: 180, height: 100 });
 });

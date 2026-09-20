@@ -4,7 +4,8 @@
  *   node test/screenshots.mjs [output-directory]
  *
  * Output defaults to test-artifacts/screenshots (ignored by Git). Each width
- * records the toolbar, both menus, the colour popover, a selected shape's style
+ * records the full command strip, its far end on narrow viewports, the colour
+ * popover, a selected shape's style
  * row, line-end controls, Browse mode, pinned and dragged positions, plus the
  * demo document's live preview and its exported PNG.
  */
@@ -54,15 +55,13 @@ try {
     await page.mouse.move(width - 5, HEIGHT - 5);
     await shot(page, `${width}-01-toolbar-pen`);
 
-    await q('[data-redline-more-tools]');
+    await evaluate(() => {
+      const bar = globalThis.__redlineTestRoot.querySelector('[data-redline-toolbar]');
+      bar.scrollLeft = bar.scrollWidth;
+    });
     await page.waitForTimeout(100);
-    await shot(page, `${width}-02-more-tools-menu`);
-    await page.keyboard.press('Escape');
-
-    await q('[data-redline-more-actions]');
-    await page.waitForTimeout(100);
-    await shot(page, `${width}-03-more-actions-menu`);
-    await page.keyboard.press('Escape');
+    await shot(page, `${width}-02-command-strip-end`);
+    await evaluate(() => { globalThis.__redlineTestRoot.querySelector('[data-redline-toolbar]').scrollLeft = 0; });
 
     await q('[data-redline-tool="select"]');
     const rect = await evaluate(() => {

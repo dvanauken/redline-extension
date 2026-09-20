@@ -202,7 +202,7 @@ async function recoveryRun() {
       const group = root.querySelector('[data-redline-control="recovery"]');
       return { visible: group.checkVisibility(), text: group.textContent, menu: !root.querySelector('[data-redline-action="restoreDraft"]').hidden };
     });
-    check(`${tag} Escape decides later: a notice and the More actions item keep Restore reachable`,
+    check(`${tag} Escape decides later: a notice and the strip control keep Restore reachable`,
       notice.visible && /Draft from .* \(1 mark\) is waiting/.test(notice.text) && notice.menu, JSON.stringify(notice));
     await s.drag('o', [500, 500], [620, 580]);
     await page.waitForTimeout(1500);
@@ -351,10 +351,10 @@ async function recoveryRun() {
     await page.evaluate(() => scrollTo(0, 0));
     await s.access.evaluate(() => {
       const root = globalThis.__redlineTestRoot;
-      root.querySelector('[data-redline-mode="browse"]').click();
+      root.querySelector('[data-redline-mode-toggle]').click();
     });
     await page.evaluate(() => scrollTo(0, 900));
-    await s.access.evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-mode="annotate"]').click());
+    await s.access.evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-mode-toggle]').click());
     await s.drag('r', [60, 300], [160, 400]);
     await waitUntil(async () => (await drafts.forTab(tabA))?.draft.viewport.scrollY === 900, 'scrolled draft saved');
     await s.access.dispose();

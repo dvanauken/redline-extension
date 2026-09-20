@@ -6,7 +6,8 @@ import {
   PointerTrail, clampCursor, cursorBounds, cursorHitTest, cursorInsideCrop, cursorPrimitives, moveCursor,
 } from './RedlineCursor.js';
 import {
-  blobToDataUrl, canvasToBlob, captureBaseImage, clipboardSupport, composeAnnotatedCanvas, downloadBlob, timestampName,
+  blobToDataUrl, canvasToBlob, captureBaseImage, clipboardSupport, composeAnnotatedCanvas,
+  composeFullPageAnnotatedCanvas, downloadBlob, timestampName,
 } from './RedlineExport.js';
 import { markPrimitives, topmostMarkAt } from './RedlineGeometry.js';
 import { RedlineGestures } from './RedlineGestures.js';
@@ -27,6 +28,7 @@ import { RedlineSvgLayer, renderPrimitives, svgElement } from './RedlineSvg.js';
 import { RedlineTextEditor } from './RedlineTextEditor.js';
 import { createCanvasMeasurer, fitTextBoxHeight } from './RedlineTextLayout.js';
 import { RedlineToolbar, TOOL_INFO } from './RedlineToolbar.js';
+import { handleCursor, keepCornerInPlace } from './RedlineTransform.js';
 import './vendor/wb/wb-color-picker/wb-color-picker.define.js';
 
 /** Tools that create marks, and so have drawing defaults to style. */
@@ -397,21 +399,17 @@ export class RedlineOverlay {
 
   /**
    * A top edge, in document units, that keeps a legend at `frame.x` clear of the
-   * toolbar and style row when they sit above it. Before the toolbar has been
+   * single toolbar strip when it sits above it. Before the toolbar has been
    * laid out, assume it is in its usual place.
    */
   _legendTop(frame, scale = this._scale()) {
-    // The style row grows while editing (a hint, a status message, the Save
-    // and Cancel buttons), so leave room for three wrapped rows of controls.
-    const ROW_ALLOWANCE = 76;
     const bar = this.active ? this.toolbarUI.bar.getBoundingClientRect() : null;
-    if (!bar?.width) return Math.round((10 + 46 + 6 + ROW_ALLOWANCE + 10) / scale.y);
-    const context = this.toolbarUI.context.hidden ? null : this.toolbarUI.context.getBoundingClientRect();
+    if (!bar?.width) return Math.round((10 + 46 + 10) / scale.y);
     const reserved = {
-      left: Math.min(bar.left, context?.left ?? bar.left),
-      right: Math.max(bar.right, context?.right ?? bar.right),
+      left: bar.left,
+      right: bar.right,
       top: bar.top,
-      bottom: context?.width ? context.top + Math.max(context.height, ROW_ALLOWANCE) : bar.bottom + 6 + ROW_ALLOWANCE,
+      bottom: bar.bottom,
     };
     const left = frame.x * scale.x;
     const right = (frame.x + frame.width) * scale.x;
@@ -638,14 +636,18 @@ export class RedlineOverlay {
     return data;
   }
 
-  async captureAnnotatedImage() {
+  async captureAnnotatedImage({ fullPage = false } = {}) {
     if (!this.document) throw new Error('Open redline mode before capturing.');
     this.textEditor.finish({ commit: true });
     this.legendEditor.commit({ focus: false });
     this.gestures.cancel();
     const snapshot = this.document.toJSON();
-    const capture = await this._captureBaseImage();
-    const canvas = composeAnnotatedCanvas(snapshot, capture.canvas, { measurer: this.measurer, includesCursor: capture.includesCursor });
+    const capture = await this._captureBaseImage({ fullPage });
+    const canvas = fullPage
+      ? composeFullPageAnnotatedCanvas(snapshot, capture.canvas, {
+        page: capture.page, measurer: this.measurer, includesCursor: capture.includesCursor,
+      })
+      : composeAnnotatedCanvas(snapshot, capture.canvas, { measurer: this.measurer, includesCursor: capture.includesCursor });
     return { canvas, scope: capture.scope, snapshot, capture };
   }
 
@@ -662,6 +664,19 @@ export class RedlineOverlay {
     }
   }
 
+  async copyFullPageImage() {
+    this._setBusy(true, 'Capturing the full page…');
+    try {
+      const { canvas, scope } = await this.captureAnnotatedImage({ fullPage: true });
+      const blob = await canvasToBlob(canvas);
+      const result = await this._copyImageBlob(blob, scope);
+      this._setMessage(`${result.message} at ${canvas.width} × ${canvas.height} native pixels`);
+      return { blob, scope, copied: result.copied };
+    } finally {
+      this._setBusy(false);
+    }
+  }
+
   /** Put a PNG on the clipboard, or download it and say exactly why. */
   async _copyImageBlob(blob, scope = 'browser-tab') {
     const support = clipboardSupport();
@@ -671,7 +686,10 @@ export class RedlineOverlay {
     }
     try {
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      return { copied: true, message: scope === 'browser-tab' ? 'Annotated screenshot copied' : 'Annotated viewport fallback copied' };
+      const message = scope === 'full-page'
+        ? 'Annotated full page copied'
+        : (scope === 'browser-tab' ? 'Annotated screenshot copied' : 'Annotated viewport fallback copied');
+      return { copied: true, message };
     } catch (error) {
       console.warn('[Redline] Clipboard write was refused; downloading instead.', error);
       downloadBlob(blob, timestampName('png'));
@@ -1108,6 +1126,7 @@ export class RedlineOverlay {
       import: () => this.chooseImport(),
       json: () => this.downloadJSON().catch(error => this._reportError(error)),
       copy: () => this.copyImage().catch(error => this._reportError(error)),
+      fullPage: () => this.copyFullPageImage().catch(error => this._reportError(error, 'Could not capture the full page')),
       report: () => this.copyReport().catch(error => this._reportError(error)),
       reportFallback: () => this.copyReport({ combined: false }).catch(error => this._reportError(error)),
       preview: () => this.showExportPreview().catch(error => this._reportError(error, 'Could not preview the export')),
@@ -1236,7 +1255,7 @@ export class RedlineOverlay {
   }
 
   /**
-   * What the style row edits: the selected mark while selecting, otherwise the
+   * What the strip's contextual controls edit: the selected mark while selecting, otherwise the
    * defaults of the active drawing tool.
    */
   _subject() {
@@ -1266,6 +1285,9 @@ export class RedlineOverlay {
       const mark = this.selectedId ? this.document.find(this.selectedId) : null;
       if (mark?.type === 'bullet') {
         return { kind: 'selection', type: mark.type, mark, style: mark, legend, hint: 'Double-click or Enter edits the explanation' };
+      }
+      if (mark?.type === 'rectangle') {
+        return { kind: 'selection', type: mark.type, mark, style: mark, legend, hint: 'Start typing, press Enter, or double-click to edit its label' };
       }
       if (mark) return { kind: 'selection', type: mark.type, mark, style: mark };
       return { kind: 'none', hint: 'Click a mark to select it · Shift+drag moves straight · arrow keys nudge' };
@@ -1359,7 +1381,7 @@ export class RedlineOverlay {
     if (subject.kind === 'selection') {
       let next = applyStyleChange(subject.mark, edit);
       if (next === subject.mark) return false;
-      if (next.type === 'textbox') next = fitTextBoxHeight(next, this.measurer);
+      if (next.type === 'textbox') next = keepCornerInPlace(next, fitTextBoxHeight(next, this.measurer));
       this.document.replace(subject.mark.id, next);
       this._render();
       return true;
@@ -1540,7 +1562,7 @@ export class RedlineOverlay {
         const selected = this.selectedId ? doc.find(this.selectedId) : null;
         const handle = this.tool === 'select' ? this.gestures.handleAt(selected, this._hoverPoint) : null;
         const hit = handle ? null : topmostMarkAt(doc.marks, this._hoverPoint, tolerance, this.measurer);
-        hover = handle ? `resize-${handle}` : hit ? (this.tool === 'eraser' ? 'erase' : 'move') : null;
+        hover = handle ? handleCursor(selected, handle, scale) : hit ? (this.tool === 'eraser' ? 'erase' : 'move') : null;
       } else if (this.tool === 'bullet') {
         const bullets = doc.marks.filter(mark => mark.type === 'bullet');
         hover = topmostMarkAt(bullets, this._hoverPoint, tolerance, this.measurer) ? 'move' : null;
@@ -1612,7 +1634,7 @@ export class RedlineOverlay {
     this.legendSelected = false;
     if (this.tool === 'select') this.selectedId = id;
     const mode = this.document.legend?.visible ? 'legend' : 'card';
-    // The style row's hint says how to save and cancel.
+    // The contextual status text says how to save and cancel.
     this._setMessage('');
     return this.legendEditor.start(id, { mode, point, creating, mergeKey });
   }
@@ -2001,7 +2023,7 @@ export class RedlineOverlay {
     } else if (result?.choice === 'discard') {
       await this.discardDraft({ confirmed: true });
     } else {
-      this._setMessage('Draft kept — Restore or Discard it from the style row or More actions');
+      this._setMessage('Draft kept — Restore or Discard it from this strip');
       this.options.setStatus('Redline draft kept for later. New marks are not saved for reload recovery until you restore or discard it.');
       this._render({ force: true });
     }
@@ -2151,13 +2173,32 @@ export class RedlineOverlay {
   }
 
   _onTextEditFinished({ mark, creating, commit, text, geometry }) {
+    if (mark.type === 'rectangle') {
+      if (commit) {
+        const next = { ...mark };
+        if (text) {
+          next.text = text;
+          next.fontSize = mark.fontSize ?? 16;
+        } else {
+          delete next.text;
+          delete next.fontSize;
+        }
+        if ((mark.text ?? '') !== text) this.document.replace(mark.id, next);
+      }
+      this._render();
+      if (!commit) this._setMessage('Rectangle label edit cancelled');
+      else if (text) this._setMessage('Rectangle label saved — select it and start typing to edit');
+      else this._setMessage('Rectangle label removed');
+      return;
+    }
     const saved = commit && Boolean(text);
     if (saved) {
-      const next = fitTextBoxHeight({ ...mark, ...geometry, text }, this.measurer);
+      const edited = { ...mark, ...geometry, text };
+      const next = keepCornerInPlace(edited, fitTextBoxHeight(edited, this.measurer));
       if (creating) {
         const added = this.document.add(next);
         this.selectedId = added.id;
-      } else if (text !== mark.text || next.end.x !== mark.end.x || next.end.y !== mark.end.y) {
+      } else if (text !== mark.text || ['start', 'end'].some(key => next[key].x !== mark[key].x || next[key].y !== mark[key].y)) {
         this.document.replace(mark.id, next);
       }
     } else if (creating) {
@@ -2167,6 +2208,17 @@ export class RedlineOverlay {
     this._render();
     if (saved) this._setMessage('Text box saved — double-click to edit');
     else if (!commit) this._setMessage('Text edit cancelled');
+  }
+
+  _startDirectTextEdit(mark, { initialText = null } = {}) {
+    if (!mark || !['rectangle', 'textbox'].includes(mark.type) || this.textEditor.active) return false;
+    this.selectedId = mark.id;
+    this.textEditor.start(mark, { initialText });
+    this._render();
+    this._setMessage(mark.type === 'rectangle'
+      ? 'Editing rectangle label — type on the canvas; Ctrl+Enter or click away saves; Esc cancels'
+      : 'Editing text — Save, click away, or Ctrl+Enter; Esc cancels');
+    return true;
   }
 
   async _onDoubleClick(event) {
@@ -2188,14 +2240,11 @@ export class RedlineOverlay {
       }
     }
     if (this.tool !== 'select') return;
-    const textMarks = this.document.marks.filter(mark => mark.type === 'note' || mark.type === 'textbox');
+    const textMarks = this.document.marks.filter(mark => ['note', 'textbox', 'rectangle'].includes(mark.type));
     const textMark = topmostMarkAt(textMarks, point, 6 / Math.min(scale.x, scale.y), this.measurer);
     if (!textMark) return;
-    if (textMark.type === 'textbox') {
-      this.selectedId = textMark.id;
-      this.textEditor.start(textMark);
-      this._render();
-      this._setMessage('Editing text — Save, click away, or Ctrl+Enter; Esc cancels');
+    if (textMark.type === 'textbox' || textMark.type === 'rectangle') {
+      this._startDirectTextEdit(textMark);
       return;
     }
     const value = await this._withChildDialog(() => this.options.requestText(textMark.text, { editing: true }));
@@ -2252,7 +2301,7 @@ export class RedlineOverlay {
     }
     this.toolbarPinned = saved.toolbarPinned === true;
     if (Number.isFinite(saved.toolbarPosition?.left) && Number.isFinite(saved.toolbarPosition?.top)) {
-      this.toolbarPosition = { left: saved.toolbarPosition.left, top: saved.toolbarPosition.top };
+      this.toolbarPosition = { left: 8, top: saved.toolbarPosition.top };
     }
   }
 
@@ -2297,9 +2346,9 @@ export class RedlineOverlay {
   _clampToolbarPosition() {
     const dock = this.toolbarUI.dock;
     if (!this.toolbarPosition || !dock.isConnected) return;
-    const gutter = 6;
+    const gutter = 8;
     const rect = this.toolbarUI.bar.getBoundingClientRect();
-    const left = Math.min(Math.max(gutter, this.toolbarPosition.left), Math.max(gutter, window.innerWidth - rect.width - gutter));
+    const left = gutter;
     const top = Math.min(Math.max(gutter, this.toolbarPosition.top), Math.max(gutter, window.innerHeight - rect.height - gutter));
     this.toolbarPosition = { left, top };
     dock.style.left = `${left}px`;
@@ -2324,7 +2373,7 @@ export class RedlineOverlay {
     if (this._toolbarDrag?.pointerId !== event.pointerId) return;
     this.toolbarPinned = false;
     this.toolbarPosition = {
-      left: this._toolbarDrag.left + event.clientX - this._toolbarDrag.startX,
+      left: 8,
       top: this._toolbarDrag.top + event.clientY - this._toolbarDrag.startY,
     };
     this._applyToolbarPosition();
@@ -2345,7 +2394,7 @@ export class RedlineOverlay {
     if (this.toolbarPinned) this.toolbarPosition = null;
     this._savePreferences();
     this._applyToolbarPosition();
-    this.options.setStatus(this.toolbarPinned ? 'Toolbar pinned to the top-left.' : 'Toolbar unpinned. Drag the grip to move it.');
+    this.options.setStatus(this.toolbarPinned ? 'Full-width strip pinned to the top.' : 'Strip unpinned. Drag the grip to move it vertically.');
   }
 
   _onKeyUp(event) {
@@ -2436,9 +2485,18 @@ export class RedlineOverlay {
       return handled();
     }
     if (editable) return undefined;
-    const selectedBullet = this.tool === 'select' && this.selectedId ? this.document?.find(this.selectedId) : null;
-    if (event.key === 'Enter' && !ctrl && selectedBullet?.type === 'bullet' && !target?.matches?.('button, select, input, textarea, summary')) {
-      this.editExplanation(selectedBullet.id);
+    const selectedMark = this.tool === 'select' && this.selectedId ? this.document?.find(this.selectedId) : null;
+    if (event.key === 'Enter' && !ctrl && selectedMark?.type === 'bullet' && !target?.matches?.('button, select, input, textarea, summary')) {
+      this.editExplanation(selectedMark.id);
+      return handled();
+    }
+    if (event.key === 'Enter' && !ctrl && selectedMark?.type === 'rectangle' && target === this.svg) {
+      this._startDirectTextEdit(selectedMark);
+      return handled();
+    }
+    if (!ctrl && !event.altKey && !event.metaKey && !event.isComposing && event.key.length === 1
+      && selectedMark?.type === 'rectangle' && target === this.svg) {
+      this._startDirectTextEdit(selectedMark, { initialText: event.key });
       return handled();
     }
     if (!ctrl && (event.key === 'Delete' || event.key === 'Backspace')) {
@@ -2462,7 +2520,7 @@ export class RedlineOverlay {
       return handled();
     }
     if (!ctrl && !event.altKey && !event.shiftKey && TOOL_KEYS[key]) {
-      const focusedTool = target?.closest?.('[data-redline-tool], [data-redline-more-tools], [data-redline-more-actions]');
+      const focusedTool = target?.closest?.('[data-redline-tool]');
       this.setTool(TOOL_KEYS[key]);
       // Keep the focus ring on the tool that is now active, not the previous one.
       if (focusedTool) this.toolbarUI.toolFocusTarget(this.tool)?.focus({ preventScroll: true });
@@ -2479,9 +2537,14 @@ export class RedlineOverlay {
     if (this.gestures.draft) marks.push(this.gestures.draft);
     // Paint the editor only once: a second translucent SVG backing beneath it
     // would make the background more opaque and double the existing text.
-    this.layer.render(this.textEditor.active
-      ? marks.filter(mark => mark.id !== this.textEditor.mark.id)
-      : marks);
+    let paintedMarks = marks;
+    if (this.textEditor.active) {
+      const editing = this.textEditor.mark;
+      paintedMarks = editing.type === 'rectangle'
+        ? marks.map(mark => mark.id === editing.id ? { ...mark, text: '' } : mark)
+        : marks.filter(mark => mark.id !== editing.id);
+    }
+    this.layer.render(paintedMarks);
 
     const selected = this.selectedId ? (live?.id === this.selectedId ? live : doc.find(this.selectedId)) : null;
     if (this.selectedId && !selected) this.selectedId = null;
@@ -2492,6 +2555,7 @@ export class RedlineOverlay {
     this.layer.renderSelection(editingSelected ? null : selected ?? explained, {
       scale: this._scale(),
       handles: this.tool === 'select' && !this.gestures.pointer,
+      bounds: doc,
     });
     this.cropView.sync(doc, this.tool === 'crop');
     const recovery = this._recovery;
@@ -2592,11 +2656,12 @@ export class RedlineOverlay {
     this.options.setStatus(`Redline: ${prefix.toLowerCase()} — ${error.message}`);
   }
 
-  async _captureBaseImage() {
+  async _captureBaseImage(captureOptions = {}) {
     return captureBaseImage({
       capturePage: this.options.capturePage,
       captureFallback: this.options.captureFallback,
       whileHidden: callback => this._whileHidden(callback),
+      captureOptions,
     });
   }
 

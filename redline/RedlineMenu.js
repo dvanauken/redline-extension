@@ -13,6 +13,7 @@ export class RedlineMenu {
     this.container = container;
     this.onOpen = onOpen;
     this.onClose = onClose;
+    this.pinned = false;
     this.menu = document.createElement('div');
     this.menu.dataset.redlineMenu = '';
     this.menu.setAttribute('role', 'menu');
@@ -26,7 +27,7 @@ export class RedlineMenu {
 
     trigger.addEventListener('click', event => {
       event.stopPropagation();
-      if (this.isOpen) this.close({ focusTrigger: false });
+      if (this.isOpen) this.close({ focusTrigger: false, force: true });
       else this.open();
     });
     trigger.addEventListener('keydown', event => {
@@ -38,7 +39,8 @@ export class RedlineMenu {
     });
     this.menu.addEventListener('keydown', event => this._onKeyDown(event));
     this.menu.addEventListener('click', event => {
-      if (event.target.closest('[role^="menuitem"]')) this.close();
+      const item = event.target.closest('[role^="menuitem"]');
+      if (item && !item.hasAttribute('data-redline-keep-open')) this.close();
     });
   }
 
@@ -63,6 +65,12 @@ export class RedlineMenu {
     return separator;
   }
 
+  setPinned(pinned) {
+    this.pinned = Boolean(pinned);
+    this.menu.toggleAttribute('data-pinned', this.pinned);
+    return this.pinned;
+  }
+
   open({ focus = 'first' } = {}) {
     if (this.trigger.disabled) return;
     this.onOpen(this);
@@ -76,8 +84,9 @@ export class RedlineMenu {
     target?.focus({ preventScroll: true });
   }
 
-  close({ focusTrigger = true } = {}) {
+  close({ focusTrigger = true, force = false } = {}) {
     if (!this.isOpen) return false;
+    if (this.pinned && !force) return false;
     const hadFocus = this.menu.contains(this.menu.getRootNode().activeElement);
     this.menu.hidden = true;
     this.trigger.setAttribute('aria-expanded', 'false');
@@ -129,7 +138,7 @@ export class RedlineMenu {
     else if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      this.close();
+      this.close({ force: true });
     } else if (event.key === 'Tab') {
       // Let focus continue from the trigger, as if the menu were not there.
       this.trigger.focus({ preventScroll: true });

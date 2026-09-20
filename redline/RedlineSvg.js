@@ -7,10 +7,13 @@
  * still lands on the node that received the first click.
  */
 
-import { markBounds, markPrimitives, boxFromPoints, textBoxHandlePoints } from './RedlineGeometry.js';
+import { markBounds, markPrimitives } from './RedlineGeometry.js';
 import { REDLINE_FONT_FAMILY } from './RedlineTextLayout.js';
+import { HANDLE_RADIUS, ROTATE_KNOB_RADIUS, selectionFrame, selectionHandles } from './RedlineTransform.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+/** Lucide's rotate-cw arrow (ISC licence), drawn inside the rotate knob. */
+const ROTATE_ICON = 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5';
 
 export function svgElement(name, attrs = {}) {
   const el = document.createElementNS(SVG_NS, name);
@@ -35,6 +38,14 @@ function paintAttributes(primitive) {
 const pointList = points => points.map(point => `${point.x},${point.y}`).join(' ');
 
 function primitiveNode(primitive) {
+  if (primitive.rotation?.angle) {
+    const { angle, cx, cy } = primitive.rotation;
+    const node = primitiveNode({ ...primitive, rotation: null });
+    if (!node) return null;
+    const group = svgElement('g', { transform: `rotate(${angle} ${cx} ${cy})` });
+    group.appendChild(node);
+    return group;
+  }
   const paint = paintAttributes(primitive);
   if (primitive.kind === 'path') {
     if (!primitive.points.length) return null;
@@ -131,32 +142,61 @@ export class RedlineSvgLayer {
 
   /**
    * Selection chrome in its own layer, so selecting never rebuilds a mark.
-   * `scale` converts screen pixels to document units for constant-size chrome.
+   *
+   * A framed mark shows its frame, turned with the mark; anything else shows a
+   * dashed box around what it paints. With `handles`, the resize handles and
+   * rotate knob from RedlineTransform.js are added. `scale` converts document
+   * units to screen pixels, so the chrome keeps a constant on-screen size, and
+   * `bounds` keeps the knob on the drawing surface.
    */
-  renderSelection(mark, { scale = { x: 1, y: 1 }, handles = false } = {}) {
+  renderSelection(mark, { scale = { x: 1, y: 1 }, handles = false, bounds = null } = {}) {
     this.selection.replaceChildren();
     if (!mark) return;
-    const padX = 6 / scale.x;
-    const padY = 6 / scale.y;
-    const bounds = mark.type === 'textbox' ? boxFromPoints(mark.start, mark.end) : markBounds(mark, this.measurer);
-    const pad = mark.type === 'textbox' ? { x: 0, y: 0 } : { x: padX, y: padY };
-    this.selection.appendChild(svgElement('rect', {
-      'data-redline-selection': '',
-      'data-redline-selection-for': mark.id,
-      x: bounds.x - pad.x,
-      y: bounds.y - pad.y,
-      width: Math.max(12 / scale.x, bounds.width + pad.x * 2),
-      height: Math.max(12 / scale.y, bounds.height + pad.y * 2),
-      'vector-effect': 'non-scaling-stroke',
-    }));
-    if (!handles || mark.type !== 'textbox') return;
-    const half = { x: 4.5 / scale.x, y: 4.5 / scale.y };
-    for (const [handle, x, y] of textBoxHandlePoints(mark)) {
+    const frame = selectionFrame(mark);
+    if (frame) {
+      const { box, center, rotation } = frame;
       this.selection.appendChild(svgElement('rect', {
-        'data-redline-resize': handle,
-        x: x - half.x, y: y - half.y, width: half.x * 2, height: half.y * 2,
+        'data-redline-selection': '',
+        'data-redline-frame': '',
+        'data-redline-selection-for': mark.id,
+        x: box.x, y: box.y, width: box.width, height: box.height,
+        transform: rotation ? `rotate(${rotation} ${center.x} ${center.y})` : undefined,
         'vector-effect': 'non-scaling-stroke',
       }));
+    } else {
+      const padX = 6 / scale.x;
+      const padY = 6 / scale.y;
+      const painted = markBounds(mark, this.measurer);
+      this.selection.appendChild(svgElement('rect', {
+        'data-redline-selection': '',
+        'data-redline-selection-for': mark.id,
+        x: painted.x - padX,
+        y: painted.y - padY,
+        width: Math.max(12 / scale.x, painted.width + padX * 2),
+        height: Math.max(12 / scale.y, painted.height + padY * 2),
+        'vector-effect': 'non-scaling-stroke',
+      }));
+    }
+    if (!handles) return;
+    // Each handle is drawn in screen pixels about its document position.
+    const at = ({ x, y }) => `translate(${x} ${y}) scale(${1 / scale.x} ${1 / scale.y})`;
+    for (const handle of selectionHandles(mark, { scale, bounds })) {
+      if (handle.name === 'rotate') {
+        this.selection.appendChild(svgElement('line', {
+          'data-redline-rotate-stem': '',
+          x1: handle.from.x, y1: handle.from.y, x2: handle.x, y2: handle.y,
+          'vector-effect': 'non-scaling-stroke',
+        }));
+        const knob = svgElement('g', { 'data-redline-rotate': '', transform: at(handle) });
+        const icon = svgElement('g', { transform: 'scale(0.46) translate(-12 -12)' });
+        icon.appendChild(svgElement('path', { d: ROTATE_ICON, 'data-redline-rotate-icon': '' }));
+        knob.append(svgElement('circle', { r: ROTATE_KNOB_RADIUS }), icon);
+        this.selection.appendChild(knob);
+      } else {
+        const node = svgElement('g', { 'data-redline-resize': handle.name, transform: at(handle) });
+        node.appendChild(svgElement('circle', { r: HANDLE_RADIUS }));
+        this.selection.appendChild(node);
+      }
     }
   }
 }

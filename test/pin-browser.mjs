@@ -31,27 +31,27 @@ export async function checkToolbarPin({ page, evaluate, worker, check, waitUntil
   const unpinned = await state();
   await clickPin();
   let pinned = await state();
-  check('real pin click docks toolbar at the top-left', unpinned.x > 100 && pinned.x === 10 && pinned.y === 10, JSON.stringify(pinned));
+  check('real pin click locks the full-width strip at the viewport gutter', unpinned.x === 8 && pinned.x === 8 && pinned.y === 8, JSON.stringify(pinned));
   check('pin has visible and accessible pressed feedback', pinned.pressed === 'true' && pinned.active
-    && pinned.background !== unpinned.background && pinned.label === 'Unpin toolbar from the top-left');
+    && pinned.background !== unpinned.background && pinned.label === 'Unpin strip from the top');
   await clickPin();
   let current = await state();
-  check('unpin restores centered positioning and neutral feedback', current.x > 100 && !current.pinned
+  check('unpin keeps the full-width strip aligned and restores neutral feedback', current.x === 8 && !current.pinned
     && current.pressed === 'false' && !current.active && current.background === unpinned.background);
   await drag();
   check('toolbar can be moved before pinning', (await state()).y > 50);
   await clickPin();
   pinned = await state();
-  check('pin clears a dragged position before docking', pinned.x === 10 && pinned.y === 10 && !pinned.positioned, JSON.stringify(pinned));
+  check('pin clears a dragged position before docking', pinned.x === 8 && pinned.y === 8 && !pinned.positioned, JSON.stringify(pinned));
   await drag();
   current = await state();
   check('dragging unpins and clears the pin highlight and tooltip', !current.pinned && !current.active
-    && current.pressed === 'false' && current.label === 'Pin toolbar to the top-left');
+    && current.pressed === 'false' && current.label === 'Pin strip to the top');
   await page.keyboard.press('F2');
   check('pin stays enabled in Page mode', !(await state()).disabled);
   await clickPin();
   pinned = await state();
-  check('real pin click works in Page mode', pinned.pinned && pinned.active && pinned.x === 10 && pinned.y === 10, JSON.stringify(pinned));
+  check('real pin click works in Page mode', pinned.pinned && pinned.active && pinned.x === 8 && pinned.y === 8, JSON.stringify(pinned));
   await waitUntil(async () => {
     const preferences = await worker.evaluate(async () => (await chrome.storage.local.get('redline.preferences'))['redline.preferences']);
     return preferences?.toolbarPinned === true && preferences?.toolbarPosition === null;

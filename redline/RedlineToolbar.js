@@ -1,11 +1,11 @@
 /**
- * Redline toolbar: a compact main bar plus a contextual style row.
+ * Redline toolbar: one full-width strip containing commands and context controls.
  *
- * The main bar keeps its controls in fixed positions whatever the tool or
- * selection. When the viewport is too narrow, lower-priority tools move into
- * the More tools menu and labels compact, in a fixed order, until the bar fits.
+ * The command strip keeps every tool and action visible in fixed groups. It is
+ * intentionally sized for a 1200px-or-wider viewport; narrower windows may
+ * scroll the strip horizontally, but never hide commands in another menu.
  *
- * The style row below it always names its target: the selected mark, or the
+ * The contextual section in the strip always names its target: the selected mark, or the
  * defaults for marks the active tool will create. It never edits both.
  *
  * The toolbar owns no document state. It reports user intent through
@@ -13,7 +13,6 @@
  */
 
 import { appendIcon, iconElement } from './icons.js';
-import { RedlineMenu } from './RedlineMenu.js';
 import {
   BULLET_SCHEMES, LEGEND_FONT_OPTIONS, LEGEND_FONT_SIZES, LEGEND_WIDTHS,
 } from './RedlineLegend.js';
@@ -54,13 +53,10 @@ const TYPE_NAMES = {
   textbox: ['text box', 'text boxes'],
 };
 
-/** Tools on the main bar, with the order in which they collapse (first = earliest). */
-const BAR_TOOLS = [
-  ['select', 12], ['pen', 11], ['brush', 6], ['line', 3], ['arrow', 10],
-  ['rectangle', 9], ['ellipse', 4], ['note', 5], ['bullet', 6.5], ['textbox', 7],
+const DRAWING_TOOLS = [
+  'pen', 'brush', 'line', 'arrow', 'rectangle', 'ellipse',
+  'polyline', 'polygon', 'note', 'bullet', 'textbox',
 ];
-const MENU_ONLY_TOOLS = ['polyline', 'polygon', 'eraser'];
-const LABEL_COLLAPSES = [['copy-label', 2], ['mode-labels', 8], ['density', 8.5]];
 
 export const REPORT_TITLE = 'Copy report — the annotated screenshot plus bullet explanations and notes as text. '
   + 'Explanations are listed even when the legend is hidden on the image.';
@@ -185,104 +181,97 @@ export class RedlineToolbar {
     bar.setAttribute('aria-label', 'Redline tools');
     this.bar = bar;
 
-    this.grip = button({ label: 'Move toolbar', title: 'Drag to move the toolbar', icon: 'grip' });
+    this.grip = button({ label: 'Move strip vertically', title: 'Drag to move the full-width strip vertically', icon: 'grip' });
     this.grip.dataset.redlineGrip = '';
 
-    const mode = document.createElement('div');
-    mode.dataset.redlineModeSwitch = '';
-    mode.setAttribute('role', 'group');
-    mode.setAttribute('aria-label', 'Interaction mode, F2 switches');
-    this.modeIndicator = document.createElement('span');
-    this.modeIndicator.dataset.redlineModeIndicator = '';
-    this.modeIndicator.setAttribute('aria-hidden', 'true');
-    this.annotateButton = button({ title: 'Annotate — draw over the page (F2)', icon: 'annotate', text: 'Annotate' });
-    this.annotateButton.dataset.redlineMode = 'annotate';
-    this.browseButton = button({ title: 'Browse — click, type and scroll the page (F2)', icon: 'browse', text: 'Browse' });
-    this.browseButton.dataset.redlineMode = 'browse';
-    mode.append(this.modeIndicator, this.annotateButton, this.browseButton);
-    this.modeSwitch = mode;
-    mode.addEventListener('click', event => {
-      const target = event.target.closest('[data-redline-mode]');
-      if (target) this._emit('mode', target.dataset.redlineMode);
+    this.modeButton = button({
+      label: 'Switch to Browse mode (F2)',
+      title: 'Switch to Browse mode — click, type and scroll normally (F2)',
+      icon: 'browse',
     });
+    this.modeButton.dataset.redlineMode = 'browse';
+    this.modeButton.dataset.redlineModeToggle = '';
+    this.modeButton.addEventListener('click', () => this._emit('mode', this.modeButton.dataset.redlineMode));
 
-    const tools = document.createElement('div');
-    tools.dataset.redlineGroup = 'tools';
-    tools.setAttribute('role', 'group');
-    tools.setAttribute('aria-label', 'Drawing tools');
-    this.collapsibles = [];
-    for (const [tool, order] of BAR_TOOLS) {
-      const element = button({ label: `${TOOL_INFO[tool].label}${TOOL_INFO[tool].key ? ` (${TOOL_INFO[tool].key})` : ''}`, title: toolTitle(tool), icon: tool, tool });
-      element.dataset.collapseOrder = String(order);
-      tools.appendChild(element);
-      this.collapsibles.push({ order, element, kind: 'tool', tool });
-    }
+    const stripGroup = (name, label) => {
+      const group = document.createElement('div');
+      group.dataset.redlineGroup = name;
+      group.dataset.redlineStripSection = name;
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', label);
+      return group;
+    };
+    const stripTool = (tool, container) => {
+      const item = button({
+        label: `${TOOL_INFO[tool].label}${TOOL_INFO[tool].key ? ` (${TOOL_INFO[tool].key})` : ''}`,
+        title: toolTitle(tool), icon: tool, tool,
+      });
+      container.appendChild(item);
+      return item;
+    };
+    const stripAction = (action, label, icon, container, title = label) => {
+      const item = button({ label, title, icon, action });
+      container.appendChild(item);
+      return item;
+    };
 
-    this.toolsButton = button({ label: 'More tools', title: 'More tools — polyline, polygon, eraser', icon: 'tools' });
-    this.toolsButton.dataset.redlineMoreTools = '';
-    this.toolsButton.appendChild(iconElement('chevron')).dataset.redlineChevron = '';
-    tools.appendChild(this.toolsButton);
-    this.toolsMenu = this._menu(this.toolsButton, 'More tools');
-    for (const [tool] of BAR_TOOLS) this._menuTool(tool, { twin: true });
-    this.toolsMenu.addSeparator().dataset.redlineTwinSeparator = '';
-    for (const tool of MENU_ONLY_TOOLS) this._menuTool(tool);
+    const tools = stripGroup('drawing', 'Drawing tools');
+    this.selectButton = button({ label: 'Select (V)', title: toolTitle('select'), icon: 'select', tool: 'select' });
+    this.eraserButton = button({ label: 'Eraser (E)', title: toolTitle('eraser'), icon: 'eraser', tool: 'eraser' });
+    tools.append(this.selectButton, this.eraserButton);
+    for (const tool of DRAWING_TOOLS) stripTool(tool, tools);
 
-    const history = document.createElement('div');
-    history.dataset.redlineGroup = 'history';
+    const history = stripGroup('history', 'History and reset');
     this.undoButton = button({ label: 'Undo (Ctrl+Z)', title: 'Undo mark change (Ctrl+Z)', icon: 'undo', action: 'undo' });
     this.redoButton = button({ label: 'Redo (Ctrl+Y)', title: 'Redo mark change (Ctrl+Y)', icon: 'redo', action: 'redo' });
-    history.append(this.undoButton, this.redoButton);
-
-    const output = document.createElement('div');
-    output.dataset.redlineGroup = 'output';
-    this.cropButton = button({ label: 'Crop (C)', title: toolTitle('crop'), icon: 'crop', tool: 'crop' });
-    this.cropButton.dataset.collapseOrder = '1';
-    this.collapsibles.push({ order: 1, element: this.cropButton, kind: 'tool', tool: 'crop' });
-    this.copyButton = button({ title: 'Copy image — annotated screenshot to the clipboard', icon: 'copy', action: 'copy', text: 'Copy image' });
-    this.copyButton.setAttribute('aria-label', 'Copy image');
-    this.reportButton = button({ title: REPORT_TITLE, icon: 'report', action: 'report', text: 'Copy report' });
-    this.reportButton.setAttribute('aria-label', 'Copy report');
-    this.reportButton.dataset.collapseOrder = '1.5';
-    this.moreButton = button({ label: 'More actions', title: 'More actions — preview, download, pointer, recovery, import, clear', icon: 'more' });
-    this.moreButton.dataset.redlineMoreActions = '';
-    this.moreMenu = this._menu(this.moreButton, 'More actions');
-    this._menuTool('crop', { twin: true });
-    const reportTwin = this._menuAction('report', 'Copy report', 'report', { hint: 'screenshot + explanations as text' });
-    reportTwin.dataset.redlineTwin = 'report';
-    reportTwin.hidden = true;
-    reportTwin.title = REPORT_TITLE;
-    this.collapsibles.push({ order: 1.5, element: this.reportButton, kind: 'action', twin: reportTwin });
-    this.previewButton = this._menuAction('preview', 'Export preview…', 'preview', { hint: 'see the exact PNG before copying' });
-    this.downloadButton = this._menuAction('download', 'Download PNG', 'download');
-    this.reportFallbackButton = this._menuAction('reportFallback', 'Copy report text + download PNG', 'report', {
-      hint: 'for apps that paste only text or only images',
+    this.clearButton = button({
+      label: 'Clear all marks',
+      title: 'Clear all marks… — removes every mark after confirmation; Undo restores them',
+      icon: 'clear',
+      action: 'clear',
     });
-    this.jsonButton = this._menuAction('json', 'Download JSON', 'json');
-    this.importButton = this._menuAction('import', 'Import annotations…', 'import');
-    this.moreMenu.addSeparator();
-    this.cursorToggle = this._menuAction('cursorToggle', 'Include cursor', 'cursor', { hint: 'Off — adds a pointer to exports', role: 'menuitemcheckbox' });
-    this.cursorToggle.setAttribute('aria-checked', 'false');
+    history.append(this.undoButton, this.redoButton, this.clearButton);
+
+    const capture = stripGroup('capture', 'Capture');
+    this.cropButton = stripTool('crop', capture);
+    this.fullPageButton = stripAction('fullPage', 'Full page', 'fullpage', capture, 'Full page — copy the entire scrollable page at native capture resolution');
+    this.copyButton = stripAction('copy', 'Copy image', 'copy', capture, 'Copy image — visible area or crop');
+    this.reportButton = stripAction('report', 'Copy report', 'report', capture, REPORT_TITLE);
+    this.reportButton.title = REPORT_TITLE;
+    this.previewButton = stripAction('preview', 'Export preview', 'preview', capture);
+    this.downloadButton = stripAction('download', 'Download PNG', 'download', capture);
+
+    const files = stripGroup('files', 'Files and fallback');
+    this.reportFallbackButton = stripAction('reportFallback', 'Report text and PNG', 'report', files, 'Report text + PNG — fallback for limited paste targets');
+    this.jsonButton = stripAction('json', 'Download JSON', 'json', files);
+    this.importButton = stripAction('import', 'Import annotations', 'import', files);
+
+    const pointer = stripGroup('pointer', 'Pointer');
+    this.cursorToggle = stripAction('cursorToggle', 'Include cursor', 'cursor', pointer, 'Include cursor — off');
+    this.cursorToggle.setAttribute('aria-pressed', 'false');
     this.cursorToggle.dataset.redlineCursorToggle = '';
-    this.cursorPlaceButton = this._menuAction('cursorPlace', 'Place cursor…', 'cursor', { hint: 'click, or arrow keys and Enter' });
-    this.moreMenu.addSeparator();
-    this.restoreDraftButton = this._menuAction('restoreDraft', 'Restore draft…', 'restore', { hint: 'marks saved before this page reloaded' });
-    this.discardDraftButton = this._menuAction('discardDraft', 'Discard draft…', 'clear', { hint: 'delete the reload-recovery copy' });
-    this.resumeRecoveryButton = this._menuAction('resumeRecovery', 'Resume reload recovery', 'restore');
-    this.clearButton = this._menuAction('clear', 'Clear all marks…', 'clear');
-    output.append(this.cropButton, this.copyButton, this.reportButton, this.moreButton);
+    this.cursorPlaceButton = stripAction('cursorPlace', 'Place cursor', 'cursor', pointer, 'Place cursor — click, or use arrow keys and Enter');
+
+    const recovery = stripGroup('recovery', 'Recovery');
+    this.restoreDraftButton = stripAction('restoreDraft', 'Restore draft', 'restore', recovery);
+    this.discardDraftButton = stripAction('discardDraft', 'Discard draft', 'clear', recovery);
+    this.resumeRecoveryButton = stripAction('resumeRecovery', 'Resume reload recovery', 'restore', recovery);
+    this.recoverySection = recovery;
 
     const frame = document.createElement('div');
     frame.dataset.redlineGroup = 'frame';
-    this.pinButton = button({ label: 'Pin toolbar to the top-left', title: 'Pin toolbar to the top-left', icon: 'pin', action: 'pin' });
+    this.pinButton = button({ label: 'Pin strip to the top', title: 'Pin strip to the top', icon: 'pin', action: 'pin' });
     this.pinButton.dataset.redlinePin = '';
     this.closeButton = button({ label: 'Close Redline (Esc)', title: 'Close Redline — marks are kept (Esc)', icon: 'close', action: 'close' });
     this.closeButton.dataset.redlineClose = '';
     frame.append(this.pinButton, this.closeButton);
 
-    for (const [name, order] of LABEL_COLLAPSES) this.collapsibles.push({ order, kind: 'flag', name });
-    this.collapsibles.sort((a, b) => a.order - b.order);
-
-    bar.append(this.grip, mode, separator(), tools, separator(), history, separator(), output, separator(), frame);
+    this.frameSeparator = separator();
+    this.frameGroup = frame;
+    bar.append(
+      this.grip, this.modeButton, separator(), tools, separator(), history, separator(),
+      capture, separator(), files, separator(), pointer, recovery, this.frameSeparator, frame,
+    );
     bar.addEventListener('click', event => {
       const tool = event.target.closest('[data-redline-tool]')?.dataset.redlineTool;
       if (tool) return this._emit('tool', tool);
@@ -290,61 +279,6 @@ export class RedlineToolbar {
       if (action) this._emit('action', action);
     });
     this.dock.appendChild(bar);
-  }
-
-  _menu(trigger, label) {
-    const menu = new RedlineMenu({
-      trigger,
-      container: this.root,
-      label,
-      onOpen: opening => this.menus.forEach(other => other !== opening && other.close({ focusTrigger: false })),
-    });
-    menu.menu.addEventListener('click', event => {
-      const tool = event.target.closest('[data-redline-tool]')?.dataset.redlineTool;
-      if (tool) return this._emit('tool', tool);
-      const action = event.target.closest('[data-redline-action]')?.dataset.redlineAction;
-      if (action) this._emit('action', action);
-    });
-    this.menus.push(menu);
-    return menu;
-  }
-
-  _menuTool(tool, { twin = false } = {}) {
-    const menu = tool === 'crop' ? this.moreMenu : this.toolsMenu;
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.setAttribute('role', 'menuitemradio');
-    item.setAttribute('aria-checked', 'false');
-    item.dataset.redlineTool = tool;
-    item.title = toolTitle(tool);
-    appendIcon(item, tool);
-    const label = document.createElement('span');
-    label.textContent = TOOL_INFO[tool].label;
-    const hint = document.createElement('small');
-    hint.textContent = TOOL_INFO[tool].key ? `${TOOL_INFO[tool].key} · ${TOOL_INFO[tool].hint}` : TOOL_INFO[tool].hint;
-    item.append(label, hint);
-    if (twin) {
-      item.dataset.redlineTwin = tool;
-      item.hidden = true;
-    }
-    return menu.add(item);
-  }
-
-  _menuAction(action, text, icon, { hint = null, role = 'menuitem' } = {}) {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.setAttribute('role', role);
-    item.dataset.redlineAction = action;
-    appendIcon(item, icon);
-    const label = document.createElement('span');
-    label.textContent = text;
-    item.appendChild(label);
-    if (hint) {
-      const small = document.createElement('small');
-      small.textContent = hint;
-      item.appendChild(small);
-    }
-    return this.moreMenu.add(item);
   }
 
   _buildContext() {
@@ -585,10 +519,6 @@ export class RedlineToolbar {
     this.duplicateButton = button({ label: 'Duplicate (Ctrl+D)', title: 'Duplicate the selected mark (Ctrl+D)', icon: 'duplicate', action: 'duplicate', text: 'Duplicate' });
     this.deleteButton = button({ label: 'Delete (Delete)', title: 'Delete the selected mark (Delete)', icon: 'delete', action: 'delete', text: 'Delete' });
     selection.append(this.duplicateButton, this.deleteButton);
-    selection.addEventListener('click', event => {
-      const action = event.target.closest('[data-redline-action]')?.dataset.redlineAction;
-      if (action) this._emit('action', action);
-    });
 
     // ---- A reload-recovery draft waiting for a decision
     const recovery = group('recovery');
@@ -610,20 +540,28 @@ export class RedlineToolbar {
     this.message.setAttribute('aria-live', 'polite');
     context.appendChild(this.message);
 
+    context.addEventListener('wheel', event => {
+      if (context.scrollWidth <= context.clientWidth || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      context.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }, { passive: false });
+
     this.controls = controls;
-    this.dock.appendChild(context);
+    this.contextSeparator = separator();
+    this.bar.insertBefore(this.contextSeparator, this.frameSeparator);
+    this.bar.insertBefore(context, this.frameSeparator);
   }
 
-  closeMenus() {
-    return this.menus.map(menu => menu.close({ focusTrigger: false })).some(Boolean);
+  closeMenus(options = {}) {
+    return false;
   }
 
   openMenu() {
-    return this.menus.find(menu => menu.isOpen) ?? null;
+    return null;
   }
 
   menuContaining(node) {
-    return this.menus.find(menu => menu.menu.contains(node)) ?? null;
+    return null;
   }
 
   setMessage(text) {
@@ -632,9 +570,7 @@ export class RedlineToolbar {
 
   /** Control that represents a tool for focus, whether on the bar or collapsed. */
   toolFocusTarget(tool) {
-    const onBar = [...this.bar.querySelectorAll(`[data-redline-tool="${tool}"]`)].find(node => !node.hidden);
-    if (onBar) return onBar;
-    return tool === 'crop' ? this.moreButton : this.toolsButton;
+    return [...this.bar.querySelectorAll(`[data-redline-tool="${tool}"]`)].find(node => !node.hidden) ?? this.selectButton;
   }
 
   /**
@@ -643,49 +579,13 @@ export class RedlineToolbar {
    * essential actions never move while the user works.
    */
   layout() {
-    const available = window.innerWidth - 16;
-    this.bar.removeAttribute('data-compact-copy');
-    this.bar.removeAttribute('data-compact-mode');
-    this.bar.removeAttribute('data-density');
-    for (const item of this.collapsibles) {
-      if (item.kind === 'tool' || item.kind === 'action') {
-        item.element.hidden = false;
-        (item.twin ?? this._twin(item.tool)).hidden = true;
-      }
-    }
-    for (const item of this.collapsibles) {
-      if (this.bar.scrollWidth <= available) break;
-      if (item.kind === 'tool' || item.kind === 'action') {
-        item.element.hidden = true;
-        (item.twin ?? this._twin(item.tool)).hidden = false;
-      } else if (item.name === 'copy-label') {
-        this.bar.dataset.compactCopy = '';
-      } else if (item.name === 'mode-labels') {
-        this.bar.dataset.compactMode = '';
-      } else if (item.name === 'density') {
-        this.bar.dataset.density = 'compact';
-      }
-    }
-    const twins = [...this.toolsMenu.menu.querySelectorAll('[data-redline-twin]')];
-    this.toolsMenu.menu.querySelector('[data-redline-twin-separator]').hidden = twins.every(node => node.hidden);
-    this.positionContext();
-    this.menus.forEach(menu => menu.position());
+    if (window.innerWidth < 2400) this.bar.dataset.density = 'compact';
+    else this.bar.removeAttribute('data-density');
   }
 
-  _twin(tool) {
-    return (tool === 'crop' ? this.moreMenu : this.toolsMenu).menu.querySelector(`[data-redline-twin="${tool}"]`);
-  }
-
-  /** Keep the style row on screen when the toolbar sits near an edge. */
+  /** Context controls share the strip, so normal flex layout positions them. */
   positionContext() {
-    if (this.context.hidden) return;
-    this.context.style.left = '0px';
-    const rect = this.context.getBoundingClientRect();
-    const gutter = 8;
-    let shift = 0;
-    if (rect.right > window.innerWidth - gutter) shift = window.innerWidth - gutter - rect.right;
-    if (rect.left + shift < gutter) shift = gutter - rect.left;
-    this.context.style.left = `${Math.round(shift)}px`;
+    // Context controls now live in the same strip; flex layout positions them.
   }
 
   /**
@@ -697,71 +597,72 @@ export class RedlineToolbar {
   sync(state) {
     const { tool, pageMode } = state;
     for (const element of this.dock.querySelectorAll('[data-redline-tool]')) this._syncToolElement(element, tool);
-    for (const element of this.root.querySelectorAll('[data-redline-menu] [data-redline-tool]')) this._syncToolElement(element, tool);
-    const menuTool = [...this.toolsMenu.menu.querySelectorAll('[data-redline-tool]')]
-      .find(item => item.dataset.redlineTool === tool && !item.hidden);
-    this.toolsButton.toggleAttribute('data-active', Boolean(menuTool));
-    const toolIcon = this.toolsButton.querySelector('svg:not([data-redline-chevron])');
-    const iconName = menuTool ? tool : 'tools';
-    if (toolIcon?.dataset.icon !== iconName) {
-      const replacement = iconElement(iconName);
-      replacement.dataset.icon = iconName;
-      toolIcon.replaceWith(replacement);
-    }
-    this.toolsButton.setAttribute('aria-label', menuTool ? `More tools, ${TOOL_INFO[tool].label} active` : 'More tools');
 
-    this.annotateButton.setAttribute('aria-pressed', String(!pageMode));
-    this.browseButton.setAttribute('aria-pressed', String(pageMode));
-    this.annotateButton.toggleAttribute('data-active', !pageMode);
-    this.browseButton.toggleAttribute('data-active', pageMode);
+    const nextMode = pageMode ? 'annotate' : 'browse';
+    const nextLabel = pageMode ? 'Annotate' : 'Browse';
+    const nextHint = pageMode ? 'draw over the page' : 'click, type and scroll normally';
+    this.modeButton.dataset.redlineMode = nextMode;
+    this.modeButton.setAttribute('aria-pressed', String(pageMode));
+    this.modeButton.toggleAttribute('data-active', pageMode);
+    this.modeButton.title = `Switch to ${nextLabel} mode — ${nextHint} (F2)`;
+    this.modeButton.setAttribute('aria-label', `Switch to ${nextLabel} mode (F2)`);
+    const modeIcon = this.modeButton.querySelector('svg');
+    if (modeIcon?.dataset.icon !== nextMode) {
+      const replacement = iconElement(nextMode);
+      replacement.dataset.icon = nextMode;
+      modeIcon.replaceWith(replacement);
+    }
     this.dock.toggleAttribute('data-browse', pageMode);
     this.bar.setAttribute('aria-label', pageMode ? 'Redline tools — Browse mode, F2 resumes annotating' : 'Redline tools — Annotate mode');
 
     this.pinButton.toggleAttribute('data-active', state.pinned);
     this.pinButton.setAttribute('aria-pressed', String(state.pinned));
-    this.pinButton.title = state.pinned ? 'Unpin toolbar from the top-left' : 'Pin toolbar to the top-left';
+    this.pinButton.title = state.pinned ? 'Unpin strip from the top' : 'Pin strip to the top';
     this.pinButton.setAttribute('aria-label', this.pinButton.title);
     this.dock.toggleAttribute('data-pinned', state.pinned);
 
-    const always = new Set([this.grip, this.annotateButton, this.browseButton, this.pinButton, this.closeButton]);
+    const always = new Set([this.grip, this.modeButton, this.pinButton, this.closeButton]);
     for (const control of this.dock.querySelectorAll('button, select, input')) {
       control.disabled = state.busy || (pageMode && !always.has(control));
     }
-    this.toolsButton.disabled = state.busy || pageMode;
-    this.moreButton.disabled = state.busy || pageMode;
     if (!state.busy && !pageMode) {
       this.undoButton.disabled = !state.canUndo;
       this.redoButton.disabled = !state.canRedo;
     }
     this.clearButton.disabled = state.busy || state.count === 0;
-    for (const item of [this.downloadButton, this.jsonButton, this.importButton, this.previewButton, this.reportFallbackButton,
-      this.moreMenu.menu.querySelector('[data-redline-twin="report"]')]) item.disabled = state.busy;
     this._syncMenuState(state);
-    if (pageMode || state.busy) this.closeMenus();
+    if (pageMode || state.busy) this.closeMenus({ force: true });
 
     this._syncContext(state);
   }
 
   _syncMenuState(state) {
     const cursor = state.cursor ?? {};
-    this.cursorToggle.setAttribute('aria-checked', String(Boolean(cursor.included)));
-    this.cursorToggle.querySelector('small').textContent = cursor.included
-      ? 'On — the pointer is drawn in exports'
-      : 'Off — adds a pointer to exports';
+    this.cursorToggle.setAttribute('aria-pressed', String(Boolean(cursor.included)));
+    this.cursorToggle.toggleAttribute('data-active', Boolean(cursor.included));
+    this.cursorToggle.title = cursor.included
+      ? 'Include cursor — on; the pointer is drawn in exports'
+      : 'Include cursor — off; adds a pointer to exports';
+    this.cursorToggle.setAttribute('aria-label', this.cursorToggle.title);
     this.cursorToggle.disabled = state.busy;
     this.cursorPlaceButton.disabled = state.busy;
     const recovery = state.recovery ?? {};
     this.restoreDraftButton.hidden = !recovery.pending;
     this.restoreDraftButton.disabled = state.busy;
-    if (recovery.pending) this.restoreDraftButton.querySelector('small').textContent = `${recovery.pending.contents} Saved ${recovery.pending.savedTime}.`;
+    if (recovery.pending) {
+      this.restoreDraftButton.title = `Restore draft — ${recovery.pending.contents} Saved ${recovery.pending.savedTime}.`;
+      this.restoreDraftButton.setAttribute('aria-label', this.restoreDraftButton.title);
+    }
     this.discardDraftButton.hidden = !recovery.available || recovery.paused || (!recovery.pending && !recovery.stored);
     this.discardDraftButton.disabled = state.busy;
-    this.discardDraftButton.querySelector('span').textContent = recovery.pending ? 'Discard waiting draft…' : 'Discard draft…';
-    this.discardDraftButton.querySelector('small').textContent = recovery.pending
-      ? 'delete the marks saved before reload'
-      : 'delete the reload-recovery copy and pause saving';
+    this.discardDraftButton.title = recovery.pending
+      ? 'Discard waiting draft — delete the marks saved before reload'
+      : 'Discard draft — delete the reload-recovery copy and pause saving';
+    this.discardDraftButton.setAttribute('aria-label', this.discardDraftButton.title);
     this.resumeRecoveryButton.hidden = !recovery.paused;
     this.resumeRecoveryButton.disabled = state.busy;
+    this.recoverySection.hidden = ![this.restoreDraftButton, this.discardDraftButton, this.resumeRecoveryButton]
+      .some(item => !item.hidden);
   }
 
   _syncToolElement(element, tool) {
@@ -775,6 +676,7 @@ export class RedlineToolbar {
     const { subject } = state;
     const hidden = state.pageMode || state.tool === 'crop';
     this.context.hidden = hidden;
+    this.contextSeparator.hidden = hidden;
     if (hidden) return;
     const show = new Set();
     const type = subject.type;
@@ -828,6 +730,7 @@ export class RedlineToolbar {
       const treatment = closed ? treatmentOf(style) : 'outline';
       if (closed) {
         show.add('treatment').add('stroke').add('fill').add('fillOpacity').add('width');
+        if (type === 'rectangle' && style.text) show.add('fontSize');
         this.treatmentButtons.forEach(element => {
           const pressed = element.dataset.treatment === treatment;
           element.setAttribute('aria-pressed', String(pressed));
@@ -889,8 +792,10 @@ export class RedlineToolbar {
         setSelectValue(this.widthSelect, style.width, value => `${Math.round(value * 100) / 100} px`);
       }
       this.widthSelect.disabled = this.widthSelect.disabled || treatment === 'fill';
-      if (type === 'textbox') {
+      if (type === 'textbox' || (type === 'rectangle' && style.text)) {
         setSelectValue(this.fontSizeSelect, style.fontSize ?? 16, value => `${value} px`);
+      }
+      if (type === 'textbox') {
         setSelectValue(this.backgroundSelect, style.backgroundOpacity ?? 1, percent);
       }
       if (LINE_TYPES.has(type)) {

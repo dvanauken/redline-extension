@@ -3,10 +3,10 @@
  *
  * Two kinds of unfinished work exist, and every interruption resolves them the
  * same way:
- *   - a pointer gesture (drawing a stroke or shape, moving, resizing, erasing)
- *     lives while a button is down; it commits on release and is discarded by
- *     `cancelPointer()` (pointercancel, lost capture, blur, Escape, tool or
- *     mode change, close, import, capture);
+ *   - a pointer gesture (drawing a stroke or shape, moving, resizing, rotating,
+ *     erasing) lives while a button is down; it commits on release and is
+ *     discarded by `cancelPointer()` (pointercancel, lost capture, blur,
+ *     Escape, tool or mode change, close, import, capture);
  *   - a path draft (polyline or polygon) lives across clicks; Enter or a
  *     double-click finishes it, Backspace removes its last point, and
  *     `cancel()` discards it (Escape, tool or mode change, close, import).
@@ -15,41 +15,14 @@
 
 import { cryptoId, translateAnnotation } from './RedlineDocument.js';
 import {
-  boxFromPoints, constrainAxis, constrainSquare, distinctPoints, isUsefulPolygon, snapAngle, textBoxHandlePoints,
-  topmostMarkAt,
+  boxFromPoints, constrainAxis, constrainSquare, distinctPoints, isUsefulPolygon, snapAngle, topmostMarkAt,
 } from './RedlineGeometry.js';
 import { moveCursor } from './RedlineCursor.js';
 import { moveLegend, resizeLegend } from './RedlineLegend.js';
-import { layoutTextBox, TEXTBOX_MIN_HEIGHT, TEXTBOX_MIN_WIDTH } from './RedlineTextLayout.js';
+import { TEXTBOX_MIN_HEIGHT, TEXTBOX_MIN_WIDTH } from './RedlineTextLayout.js';
+import { handleAt, resizeMark, rotateMark } from './RedlineTransform.js';
 
 const DRAW_BOX_TOOLS = new Set(['line', 'arrow', 'rectangle', 'ellipse', 'textbox']);
-
-/**
- * Resize a text box from one handle, never smaller than its minimum size or
- * than the height its text needs at the new width.
- */
-export function resizeTextBox(mark, handle, dx, dy, measurer) {
-  const box = boxFromPoints(mark.start, mark.end);
-  let left = box.x;
-  let top = box.y;
-  let right = box.x + box.width;
-  let bottom = box.y + box.height;
-  if (handle.includes('w')) left += dx;
-  if (handle.includes('e')) right += dx;
-  if (handle.includes('n')) top += dy;
-  if (handle.includes('s')) bottom += dy;
-  if (right - left < TEXTBOX_MIN_WIDTH) {
-    if (handle.includes('w')) left = right - TEXTBOX_MIN_WIDTH;
-    else right = left + TEXTBOX_MIN_WIDTH;
-  }
-  const probe = { ...mark, start: { x: left, y: top }, end: { x: right, y: top + 1 } };
-  const minHeight = Math.max(TEXTBOX_MIN_HEIGHT, Math.ceil(layoutTextBox(probe, measurer).requiredHeight));
-  if (bottom - top < minHeight) {
-    if (handle.includes('n')) top = bottom - minHeight;
-    else bottom = top + minHeight;
-  }
-  return { ...mark, start: { x: left, y: top }, end: { x: right, y: bottom } };
-}
 
 export class RedlineGestures {
   /**
@@ -96,10 +69,14 @@ export class RedlineGestures {
     const tool = host.tool;
 
     if (tool === 'select') {
+      // The selected mark's handles sit above every mark, as its frame does.
       const selected = host.selectedId ? doc.find(host.selectedId) : null;
-      const handle = selected?.type === 'textbox' ? this._handleAt(selected, point) : null;
+      const handle = this.handleAt(selected, point);
       if (handle) {
-        this.pointer = { kind: 'resize', pointerId: event.pointerId, start: point, original: selected, handle };
+        this.pointer = {
+          kind: handle === 'rotate' ? 'rotate' : 'resize', pointerId: event.pointerId, start: point, last: point,
+          original: selected, handle, shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey,
+        };
         return true;
       }
       const hit = topmostMarkAt(doc.marks, point, this._tolerance(), host.measurer);
@@ -171,6 +148,7 @@ export class RedlineGestures {
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     gesture.last = point;
     gesture.shift = event.shiftKey;
+    gesture.ctrl = event.ctrlKey || event.metaKey;
     this._applyPointer(point, event.shiftKey);
   }
 
@@ -241,7 +219,11 @@ export class RedlineGestures {
       return;
     }
     if (gesture.kind === 'resize') {
-      this.live = resizeTextBox(gesture.original, gesture.handle, point.x - gesture.start.x, point.y - gesture.start.y, host.measurer);
+      this.live = resizeMark(gesture.original, gesture.handle, gesture.start, point, {
+        scale: host.scale(), keepAspect: shiftKey, fromCenter: gesture.ctrl, measurer: host.measurer,
+      });
+    } else if (gesture.kind === 'rotate') {
+      this.live = rotateMark(gesture.original, gesture.start, point, { snap: shiftKey });
     } else if (gesture.kind === 'move') {
       let dx = point.x - gesture.start.x;
       let dy = point.y - gesture.start.y;
@@ -319,12 +301,14 @@ export class RedlineGestures {
       host.render();
       return;
     }
-    if (gesture.kind === 'resize' || gesture.kind === 'move') {
+    if (gesture.kind === 'resize' || gesture.kind === 'rotate' || gesture.kind === 'move') {
       const live = this.live;
       this.live = null;
-      const moved = gesture.kind === 'resize' || (point && this._screenDistance(gesture.start, point) >= 1);
-      if (!cancelled && live && moved) doc.replace(gesture.original.id, live);
-      else if (!cancelled && gesture.bullet) {
+      const moved = point && this._screenDistance(gesture.start, point) >= 1;
+      if (!cancelled && live && moved) {
+        doc.replace(gesture.original.id, live);
+        if (gesture.kind === 'rotate') host.setMessage(`Rotated to ${Math.round(live.rotation ?? 0) % 360}° · Shift snaps to 15° steps`);
+      } else if (!cancelled && gesture.bullet) {
         host.setMessage(`Bullet ${gesture.original.label}: double-click to edit its explanation, or drag to move it`);
       }
       host.render();
@@ -410,16 +394,11 @@ export class RedlineGestures {
     return hadPointer || hadDraft;
   }
 
-  _handleAt(mark, point) {
-    const scale = this.host.scale();
-    for (const [handle, x, y] of textBoxHandlePoints(mark)) {
-      if (Math.abs((point.x - x) * scale.x) <= 7 && Math.abs((point.y - y) * scale.y) <= 7) return handle;
-    }
-    return null;
-  }
-
+  /** The resize handle or rotate knob of `mark` under a point, or null. */
   handleAt(mark, point) {
-    return mark?.type === 'textbox' ? this._handleAt(mark, point) : null;
+    if (!mark) return null;
+    const doc = this.host.document;
+    return handleAt(mark, point, { scale: this.host.scale(), bounds: doc });
   }
 
   _eraseAt(point) {

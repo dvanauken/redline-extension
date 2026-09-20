@@ -75,26 +75,25 @@ export async function checkCropAndPageMode({ page, evaluate, importFile, clickAc
     input.style.cssText = 'position:fixed;left:50px;top:420px;width:220px;height:30px;';
     document.body.appendChild(input);
   });
-  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-mode="browse"]').click());
+  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-mode-toggle]').click());
   const paused = await evaluate(() => {
     const sr = globalThis.__redlineTestRoot;
     const root = sr.querySelector('[data-redline-root]');
     const toolbar = sr.querySelector('[data-redline-toolbar]');
     return { open: root.open, modal: root.matches(':modal'), page: root.hasAttribute('data-page-mode'),
       border: getComputedStyle(toolbar).borderTopStyle,
-      indicator: getComputedStyle(sr.querySelector('[data-redline-mode-indicator]')).backgroundColor,
-      browsePressed: sr.querySelector('[data-redline-mode="browse"]').getAttribute('aria-pressed'),
-      annotatePressed: sr.querySelector('[data-redline-mode="annotate"]').getAttribute('aria-pressed'),
+      modePressed: sr.querySelector('[data-redline-mode-toggle]').getAttribute('aria-pressed'),
+      nextMode: sr.querySelector('[data-redline-mode-toggle]').dataset.redlineMode,
       contextHidden: sr.querySelector('[data-redline-context]').hidden,
       cropVisible: sr.querySelector('[data-redline-crop-layer]').checkVisibility(),
       locked: getComputedStyle(document.body).overflow === 'hidden' };
   });
   check('Browse mode is nonmodal, visibly paused with explicit state, and removes crop interception',
-    paused.open && !paused.modal && paused.page && paused.border === 'dashed' && paused.indicator === 'rgba(0, 0, 0, 0)'
-    && paused.browsePressed === 'true' && paused.annotatePressed === 'false' && paused.contextHidden
+    paused.open && !paused.modal && paused.page && paused.border === 'dashed'
+    && paused.modePressed === 'true' && paused.nextMode === 'annotate' && paused.contextHidden
     && !paused.cropVisible && !paused.locked, JSON.stringify(paused));
-  check('Annotate and Browse labels fit the mode switch', await evaluate(() => [...globalThis.__redlineTestRoot
-    .querySelectorAll('[data-redline-mode]')].every(button => button.scrollWidth <= button.clientWidth + 1)));
+  check('the compact mode toggle stays icon-sized', await evaluate(() =>
+    globalThis.__redlineTestRoot.querySelector('[data-redline-mode-toggle]').getBoundingClientRect().width <= 36));
   await page.locator('#page-button').click();
   check('the underlying page button receives real clicks', await page.evaluate(() => globalThis.__redlinePageClicks) === 1);
   await page.locator('#page-mode-input').fill('page typing vaprnt');
@@ -113,15 +112,15 @@ export async function checkCropAndPageMode({ page, evaluate, importFile, clickAc
     const sr = globalThis.__redlineTestRoot;
     return { modal: sr.querySelector('[data-redline-root]').matches(':modal'),
       border: getComputedStyle(sr.querySelector('[data-redline-toolbar]')).borderTopStyle,
-      indicator: getComputedStyle(sr.querySelector('[data-redline-mode-indicator]')).backgroundColor,
-      annotatePressed: sr.querySelector('[data-redline-mode="annotate"]').getAttribute('aria-pressed'),
+      modePressed: sr.querySelector('[data-redline-mode-toggle]').getAttribute('aria-pressed'),
+      nextMode: sr.querySelector('[data-redline-mode-toggle]').dataset.redlineMode,
       opacity: getComputedStyle(sr.querySelector('[data-redline-toolbar]')).opacity,
       locked: getComputedStyle(document.body).overflow === 'hidden',
       cropVisible: sr.querySelector('[data-redline-crop-layer]').checkVisibility() };
   });
-  check('F2 from the page restores Annotate mode and its state indicator',
-    resumed.modal && resumed.border === 'solid' && resumed.indicator === 'rgb(182, 93, 102)'
-    && resumed.annotatePressed === 'true' && resumed.opacity === '1' && resumed.locked && resumed.cropVisible, JSON.stringify(resumed));
+  check('F2 from the page restores Annotate mode and its compact toggle state',
+    resumed.modal && resumed.border === 'solid' && resumed.modePressed === 'false' && resumed.nextMode === 'browse'
+    && resumed.opacity === '1' && resumed.locked && resumed.cropVisible, JSON.stringify(resumed));
   check('mode switching preserves crop and marks', JSON.stringify(await frame()) === JSON.stringify(rect) && await marks() === 2);
   await page.keyboard.press('F2');
   await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-mode]').scrollIntoView({ block: 'nearest', inline: 'nearest' }));

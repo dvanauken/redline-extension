@@ -124,7 +124,92 @@ async function fetchExtensionCss(path) {
  * document adds its own check: if it was hidden or changed address while the
  * worker captured, the image cannot be trusted to show this page.
  */
-async function capturePage(host) {
+async function requestVisibleCapture(address) {
+  let response;
+  try {
+    response = await chrome.runtime.sendMessage({ type: CAPTURE_MESSAGE, address });
+  } catch (error) {
+    throw new Error(`The extension could not reach its background worker: ${error?.message ?? error}`);
+  }
+  if (!response?.ok) throw new Error(response?.error ?? 'The browser refused to capture this tab.');
+  return response.dataUrl;
+}
+
+function decodeCapture(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('A full-page capture tile could not be decoded.'));
+    image.src = dataUrl;
+  });
+}
+
+function tilePositions(total, viewport) {
+  if (total <= viewport) return [0];
+  const last = Math.max(0, total - viewport);
+  const values = [];
+  for (let value = 0; value < last; value += viewport) values.push(value);
+  if (values.at(-1) !== last) values.push(last);
+  return values;
+}
+
+async function captureFullPage(address, interrupted) {
+  const scrolling = document.scrollingElement ?? document.documentElement;
+  const width = Math.max(innerWidth, scrolling.scrollWidth, document.body?.scrollWidth ?? 0);
+  const height = Math.max(innerHeight, scrolling.scrollHeight, document.body?.scrollHeight ?? 0);
+  const original = { x: scrollX, y: scrollY };
+  const xs = tilePositions(width, innerWidth);
+  const ys = tilePositions(height, innerHeight);
+  if (xs.length * ys.length > 60) {
+    throw new Error('This page is too large for a safe full-page capture (more than 60 screen tiles).');
+  }
+  const oldBehavior = scrolling.style.getPropertyValue('scroll-behavior');
+  const oldPriority = scrolling.style.getPropertyPriority('scroll-behavior');
+  const wasLocked = document.body.hasAttribute('data-redline-active');
+  if (wasLocked) document.body.removeAttribute('data-redline-active');
+  scrolling.style.setProperty('scroll-behavior', 'auto', 'important');
+  let canvas = null;
+  let ctx = null;
+  let scaleX = 1;
+  let scaleY = 1;
+  try {
+    for (const y of ys) {
+      for (const x of xs) {
+        window.scrollTo({ left: x, top: y, behavior: 'instant' });
+        await nextPaint();
+        if (interrupted()) throw new Error('This tab changed while capturing the full page. Nothing was exported.');
+        const image = await decodeCapture(await requestVisibleCapture(address));
+        if (!canvas) {
+          scaleX = image.naturalWidth / innerWidth;
+          scaleY = image.naturalHeight / innerHeight;
+          const pixelWidth = Math.round(width * scaleX);
+          const pixelHeight = Math.round(height * scaleY);
+          if (pixelWidth > 32767 || pixelHeight > 32767 || pixelWidth * pixelHeight > 64_000_000) {
+            throw new Error('This full page is too large to encode as one PNG.');
+          }
+          canvas = document.createElement('canvas');
+          canvas.width = pixelWidth;
+          canvas.height = pixelHeight;
+          ctx = canvas.getContext('2d');
+        }
+        ctx.drawImage(image, Math.round(scrollX * scaleX), Math.round(scrollY * scaleY));
+      }
+    }
+  } finally {
+    window.scrollTo({ left: original.x, top: original.y, behavior: 'instant' });
+    if (oldBehavior) scrolling.style.setProperty('scroll-behavior', oldBehavior, oldPriority);
+    else scrolling.style.removeProperty('scroll-behavior');
+    if (wasLocked) document.body.setAttribute('data-redline-active', '');
+    await nextPaint();
+  }
+  return {
+    canvas,
+    scope: 'full-page',
+    page: { x: 0, y: 0, width, height, scrollX: original.x, scrollY: original.y },
+  };
+}
+
+async function capturePage(host, { fullPage = false } = {}) {
   if (document.visibilityState !== 'visible') {
     throw new Error('This tab is in the background, so nothing was captured. Switch to it and try again.');
   }
@@ -144,22 +229,16 @@ async function capturePage(host) {
     if (interrupted || document.visibilityState !== 'visible') {
       throw new Error('This tab was hidden before capture, so nothing was captured. Try again.');
     }
-    let response;
-    try {
-      response = await chrome.runtime.sendMessage({ type: CAPTURE_MESSAGE, address });
-    } catch (error) {
-      throw new Error(`The extension could not reach its background worker: ${error?.message ?? error}`);
-    }
-    if (!response?.ok) {
-      throw new Error(response?.error ?? 'The browser refused to capture this tab.');
-    }
+    const result = fullPage
+      ? await captureFullPage(address, () => interrupted || document.visibilityState !== 'visible' || location.href !== address)
+      : { dataUrl: await requestVisibleCapture(address), scope: 'browser-tab' };
     if (interrupted || document.visibilityState !== 'visible') {
       throw new Error('This tab was switched away from during capture, so the screenshot was discarded. Nothing was exported; try again.');
     }
     if (location.href !== address) {
       throw new Error('This page changed address during capture, so the screenshot was discarded. Nothing was exported; try again.');
     }
-    return { dataUrl: response.dataUrl, scope: 'browser-tab' };
+    return result;
   } finally {
     document.removeEventListener('visibilitychange', onHidden);
     window.removeEventListener('pagehide', onPageHide);
@@ -260,7 +339,7 @@ async function install() {
     getContext,
     describePage,
     setStatus,
-    capturePage: () => capturePage(host),
+    capturePage: options => capturePage(host, options),
     createColorPicker,
     preferences,
     savePreferences: value => chrome.storage.local.set({ [PREFERENCES_KEY]: value }),

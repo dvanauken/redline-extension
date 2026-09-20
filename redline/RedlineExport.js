@@ -128,6 +128,43 @@ export function composeAnnotatedCanvas(snapshot, captureCanvas, { measurer, incl
 }
 
 /**
+ * Compose viewport-space marks over a whole-page capture. Marks are translated
+ * to the page position occupied by the viewport when capture began.
+ */
+export function composeFullPageAnnotatedCanvas(snapshot, captureCanvas, {
+  page, measurer, includesCursor = false,
+}) {
+  if (!page || !Number.isFinite(page.width) || !Number.isFinite(page.height)
+    || page.width < 1 || page.height < 1) {
+    throw new TypeError('A full-page capture must include its page dimensions.');
+  }
+  // A full-page capture is already made from native browser screenshot pixels.
+  // Never let a crop/export preference downsample that source: resampling a
+  // very tall page makes small text visibly soft. Values above 100% remain an
+  // explicit opt-in upscale, while 50% no longer destroys captured detail.
+  const outputScale = Math.max(1, Number(snapshot.outputScale) || 1);
+  const width = Math.round(captureCanvas.width * outputScale);
+  const height = Math.round(captureCanvas.height * outputScale);
+  if (width > MAX_EXPORT_SIDE || height > MAX_EXPORT_SIDE || width * height > MAX_EXPORT_PIXELS) {
+    throw new Error('Full-page output is too large. Reduce the page length or output scale.');
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = outputScale !== 1;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(captureCanvas, 0, 0, width, height);
+  const scaleX = width / page.width;
+  const scaleY = height / page.height;
+  ctx.save();
+  ctx.translate((page.scrollX - (page.x ?? 0)) * scaleX, (page.scrollY - (page.y ?? 0)) * scaleY);
+  drawRedlineDocument(ctx, snapshot, { scaleX, scaleY, measurer, cursor: !includesCursor });
+  ctx.restore();
+  return canvas;
+}
+
+/**
  * Capture the page beneath the overlay.
  *
  * A host `capturePage` adapter (the extension's captureVisibleTab) wins. A
@@ -137,15 +174,19 @@ export function composeAnnotatedCanvas(snapshot, captureCanvas, { measurer, incl
  * An adapter whose image already contains the real pointer returns
  * `includesCursor: true`, so composition does not add the proxy as well.
  */
-export async function captureBaseImage({ capturePage, captureFallback, whileHidden }) {
+export async function captureBaseImage({ capturePage, captureFallback, whileHidden, captureOptions = {} }) {
   let nativeError = null;
   if (capturePage) {
-    const result = await whileHidden(() => capturePage());
+    const result = await whileHidden(() => capturePage(captureOptions));
     return {
       canvas: await captureSourceToCanvas(result),
       scope: result?.scope ?? 'host-page',
       includesCursor: result?.includesCursor === true,
+      page: result?.page ?? null,
     };
+  }
+  if (captureOptions.fullPage) {
+    throw new Error('Full-page capture is unavailable in this host.');
   }
   if (navigator.mediaDevices?.getDisplayMedia) {
     try {

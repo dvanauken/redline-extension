@@ -37,6 +37,12 @@ export const CLOSED_TYPES = new Set(['rectangle', 'ellipse', 'polygon']);
 export const LINE_TYPES = new Set(['line', 'arrow', 'polyline']);
 export const PATH_TYPES = new Set(['pen', 'brush', 'polyline', 'polygon']);
 export const BOX_TYPES = new Set(['rectangle', 'ellipse', 'line', 'arrow', 'textbox']);
+/**
+ * Marks drawn inside a frame that can be resized from eight handles and
+ * rotated. Straight lines resize from their two ends instead; bullets and notes
+ * are fixed-size markers.
+ */
+export const FRAMED_TYPES = new Set(['rectangle', 'ellipse', 'textbox', 'pen', 'brush', 'polyline', 'polygon']);
 
 export const TREATMENTS = [
   ['outline', 'Outline'],
@@ -144,6 +150,12 @@ export function bulletGlyphColor(fill) {
     : BULLET_DARK_GLYPH;
 }
 
+/** Readable label ink for rectangle fills; translucent or empty shapes use dark ink. */
+export function rectangleLabelColor(mark) {
+  const fill = redlineMarkFill(mark);
+  return fill && fill.opacity >= 0.65 ? bulletGlyphColor(fill.color) : BULLET_DARK_GLYPH;
+}
+
 /** White paper backing, translucent by default so page content stays visible. */
 export function redlineTextBoxFill(opacity = 0.75) {
   const alpha = Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 0.75));
@@ -248,7 +260,7 @@ export function applyStyleChange(mark, { property, value }) {
     }
     case 'fontSize': {
       const size = Number(value);
-      if (mark.type !== 'textbox' || !Number.isFinite(size) || size < 10) return mark;
+      if (!['textbox', 'rectangle'].includes(mark.type) || !Number.isFinite(size) || size < 10) return mark;
       next.fontSize = size;
       break;
     }

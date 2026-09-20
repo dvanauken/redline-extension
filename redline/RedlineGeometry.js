@@ -12,14 +12,17 @@
  *   { kind: 'ellipse', cx, cy, rx, ry, stroke, fill }
  *   { kind: 'text', lines: [{ text, x, y }], font: { size, weight }, color, anchor, clip }
  * where stroke is { color, width, opacity } or null and fill is
- * { color, opacity } or null.
+ * { color, opacity } or null. A rotated mark's primitives also carry
+ * `rotation: { angle, cx, cy }`: draw the primitive as described, turned
+ * `angle` degrees clockwise about (cx, cy).
  */
 
 import { BULLET_GLYPH_SIZE, BULLET_RADIUS } from './RedlineLegend.js';
 import {
-  bulletGlyphColor, markDecorations, redlineMarkFill, redlineMarkStroked, redlineNoteGlyph, redlineTextBoxFill,
+  FRAMED_TYPES, PATH_TYPES, bulletGlyphColor, markDecorations, rectangleLabelColor, redlineMarkFill,
+  redlineMarkStroked, redlineNoteGlyph, redlineTextBoxFill,
 } from './RedlineStyles.js';
-import { fontString, layoutNote, layoutTextBox, NOTE_RADIUS } from './RedlineTextLayout.js';
+import { fontString, layoutNote, layoutRectangleLabel, layoutTextBox, NOTE_RADIUS } from './RedlineTextLayout.js';
 
 const EPSILON = 1e-6;
 
@@ -32,23 +35,54 @@ export function boxFromPoints(start, end) {
   };
 }
 
-/** The eight resize handles of a text box, as [name, x, y]. */
-export function textBoxHandlePoints(mark) {
-  const box = boxFromPoints(mark.start, mark.end);
-  const right = box.x + box.width;
-  const bottom = box.y + box.height;
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  return [
-    ['nw', box.x, box.y], ['n', cx, box.y], ['ne', right, box.y], ['e', right, cy],
-    ['se', right, bottom], ['s', cx, bottom], ['sw', box.x, bottom], ['w', box.x, cy],
-  ];
+const finitePoint = point => Number.isFinite(point?.x) && Number.isFinite(point?.y);
+
+/** Smallest box containing the points; empty at the origin when there are none. */
+export function pointsBox(points) {
+  if (!points.length) return { x: 0, y: 0, width: 0, height: 0 };
+  const xs = points.map(point => point.x);
+  const ys = points.map(point => point.y);
+  const x = Math.min(...xs);
+  const y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
 }
 
-const finitePoint = point => Number.isFinite(point?.x) && Number.isFinite(point?.y);
+export const boxCenter = box => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
+
+/** A point turned `degrees` clockwise (on screen, where y grows downward) about `center`. */
+export function rotatePoint(point, center, degrees) {
+  if (!degrees) return { x: point.x, y: point.y };
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  return { x: center.x + dx * cos - dy * sin, y: center.y + dx * sin + dy * cos };
+}
+
+/** Clockwise rotation of a framed mark in degrees; 0 for every other mark. */
+export function markRotation(mark) {
+  return FRAMED_TYPES.has(mark?.type) && Number.isFinite(mark.rotation) ? mark.rotation : 0;
+}
+
+/**
+ * The unrotated box a framed mark's geometry occupies: the start/end box of a
+ * shape or text box, or the extent of a stroke's points. A rotated mark turns
+ * about this box's centre. Null for marks without a frame.
+ */
+export function markFrame(mark) {
+  if (!FRAMED_TYPES.has(mark?.type)) return null;
+  if (PATH_TYPES.has(mark.type)) return pointsBox((mark.points ?? []).filter(finitePoint));
+  return boxFromPoints(mark.start, mark.end);
+}
 
 function strokeOf(mark, overrides = {}) {
   return { color: mark.color, width: mark.width, opacity: 1, ...overrides };
+}
+
+/** Width a stroke paints: the highlighter paints four times its stored width, never below 6px. */
+export function paintedStrokeWidth(mark) {
+  return mark.type === 'brush' ? Math.max(mark.width * 4, 6) : mark.width;
 }
 
 /** Radius of an open or filled circle end, growing gently with the stroke. */
@@ -146,6 +180,15 @@ function openPathPrimitives(points, mark, stroke) {
 
 /** Everything a renderer needs to draw one mark. */
 export function markPrimitives(mark, measurer) {
+  const primitives = uprightPrimitives(mark, measurer);
+  const angle = markRotation(mark);
+  if (!angle) return primitives;
+  const center = boxCenter(markFrame(mark));
+  const rotation = { angle, cx: center.x, cy: center.y };
+  return primitives.map(primitive => ({ ...primitive, rotation }));
+}
+
+function uprightPrimitives(mark, measurer) {
   const fill = redlineMarkFill(mark);
   const stroked = redlineMarkStroked(mark);
   switch (mark.type) {
@@ -157,7 +200,7 @@ export function markPrimitives(mark, measurer) {
       if (mark.type === 'brush') {
         return [{
           kind: 'path', points, closed: false, fill: null,
-          stroke: strokeOf(mark, { width: Math.max(mark.width * 4, 6), opacity: mark.opacity ?? 0.35 }),
+          stroke: strokeOf(mark, { width: paintedStrokeWidth(mark), opacity: mark.opacity ?? 0.35 }),
         }];
       }
       const stroke = strokeOf(mark, { opacity: mark.opacity ?? 1 });
@@ -176,7 +219,20 @@ export function markPrimitives(mark, measurer) {
       return openPathPrimitives([mark.start, mark.end], mark, strokeOf(mark));
     case 'rectangle': {
       const box = boxFromPoints(mark.start, mark.end);
-      return [{ kind: 'rect', ...box, radius: 0, fill, stroke: stroked ? strokeOf(mark) : null }];
+      const primitives = [{
+        kind: 'rect', ...box, radius: 0, fill, stroke: stroked ? strokeOf(mark) : null,
+        // Once a rectangle has a label, its body behaves like one labelled
+        // object for selection, movement and direct re-editing.
+        hitArea: Boolean(mark.text),
+      }];
+      if (mark.text) {
+        const layout = layoutRectangleLabel(mark, measurer);
+        primitives.push({
+          kind: 'text', lines: layout.lines, font: { size: layout.fontSize, weight: 600 },
+          color: rectangleLabelColor(mark), anchor: 'middle', clip: layout.clip,
+        });
+      }
+      return primitives;
     }
     case 'ellipse': {
       const box = boxFromPoints(mark.start, mark.end);
@@ -253,15 +309,25 @@ function unionBounds(boxes) {
 function primitiveBounds(primitive) {
   const half = (primitive.stroke?.width ?? 0) / 2;
   const grow = box => ({ x: box.x - half, y: box.y - half, width: box.width + half * 2, height: box.height + half * 2 });
+  const angle = primitive.rotation?.angle ?? 0;
+  const turn = point => (angle ? rotatePoint(point, { x: primitive.rotation.cx, y: primitive.rotation.cy }, angle) : point);
   if (primitive.kind === 'path') {
     if (!primitive.points.length) return null;
-    const xs = primitive.points.map(point => point.x);
-    const ys = primitive.points.map(point => point.y);
-    return grow({ x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) });
+    return grow(pointsBox(primitive.points.map(turn)));
   }
-  if (primitive.kind === 'rect') return grow(primitive);
+  if (primitive.kind === 'rect') {
+    const { x, y, width, height } = primitive;
+    return grow(pointsBox([{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }].map(turn)));
+  }
   if (primitive.kind === 'ellipse') {
-    return grow({ x: primitive.cx - primitive.rx, y: primitive.cy - primitive.ry, width: primitive.rx * 2, height: primitive.ry * 2 });
+    // The extent of a turned ellipse along each axis.
+    const radians = (angle * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const halfWidth = Math.hypot(primitive.rx * cos, primitive.ry * sin);
+    const halfHeight = Math.hypot(primitive.rx * sin, primitive.ry * cos);
+    const center = turn({ x: primitive.cx, y: primitive.cy });
+    return grow({ x: center.x - halfWidth, y: center.y - halfHeight, width: halfWidth * 2, height: halfHeight * 2 });
   }
   return null;
 }
@@ -300,6 +366,11 @@ function distanceToPath(point, points, closed) {
 }
 
 function hitsPrimitive(primitive, point, tolerance) {
+  // Test a rotated primitive in its own upright coordinates; turning preserves distances.
+  if (primitive.rotation?.angle) {
+    const { angle, cx, cy } = primitive.rotation;
+    return hitsPrimitive({ ...primitive, rotation: null }, rotatePoint(point, { x: cx, y: cy }, -angle), tolerance);
+  }
   const reach = tolerance + (primitive.stroke?.width ?? 0) / 2;
   if (primitive.kind === 'path') {
     if (!primitive.points.length) return false;

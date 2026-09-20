@@ -12,6 +12,7 @@
     "test": "node test/all.mjs",
     "test:model": "node --test test/*.test.mjs",
     "test:browser": "node test/run.mjs",
+    "test:fullpage": "node test/fullpage-browser.mjs",
     "test:phase2": "node test/phase2-browser.mjs",
     "test:phase3": "node test/phase3-browser.mjs && node test/phase3-recovery-browser.mjs",
     "test:watcher": "pwsh -NoProfile -File test/watch-reload.ps1",

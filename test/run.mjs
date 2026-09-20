@@ -139,7 +139,7 @@ try {
     const rect = sr.querySelector('[data-redline-toolbar]').getBoundingClientRect();
     return { x: rect.x, y: rect.y, pinned: sr.querySelector('[data-redline-dock]').hasAttribute('data-pinned') };
   });
-  check('toolbar grip moves the menu',
+  check('toolbar grip moves the strip',
     toolbarAfterDrag.y > toolbarBeforeDrag.toolbar.y + 40
       && !toolbarAfterDrag.pinned,
     JSON.stringify({ before: toolbarBeforeDrag.toolbar, after: toolbarAfterDrag }));
@@ -358,42 +358,40 @@ try {
   check('Tab advances through the toolbar (patch 2)',
     focusPath[0] === 1 && focusPath[1] === 2 && focusPath[2] === 3, JSON.stringify(focusPath));
 
-  // Traverse actual controls: the rest of the bar, then the style row and its dropdowns.
-  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-tool="textbox"]').focus());
+  // Traverse every command and contextual control in the single strip.
+  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-tool="eraser"]').focus());
   const focusedControl = () => evaluate(() => {
     const element = globalThis.__redlineTestRoot.activeElement;
     return element?.getAttribute('aria-label') || element?.dataset.redlineTool
       || element?.dataset.redlineAction || element?.tagName;
   });
   const barPath = [];
-  // Phase 3 added Copy report beside Copy image; the traversal otherwise is unchanged.
-  for (let i = 0; i < 13; i++) { await page.keyboard.press('Tab'); barPath.push(await focusedControl()); }
-  check('Tab reaches the menus, essential actions, and the style row dropdowns', JSON.stringify(barPath) === JSON.stringify([
-    'More tools', 'Undo (Ctrl+Z)', 'Crop (C)', 'Copy image', 'Copy report', 'More actions', 'Pin toolbar to the top-left',
-    'Close Redline (Esc)', 'Border color, #b65d66', 'Font size', 'Text box background', 'Duplicate (Ctrl+D)', 'Delete (Delete)',
-  ]), JSON.stringify(barPath));
+  for (let i = 0; i < 40; i++) {
+    await page.keyboard.press('Tab');
+    const focused = await focusedControl();
+    barPath.push(focused);
+    if (focused === 'Close Redline (Esc)') break;
+  }
+  check('Tab reaches every command group and contextual dropdown in the strip',
+    ['Pen (P)', 'Text (T)', 'Undo (Ctrl+Z)', 'Clear all marks', 'Full page', 'Copy image', 'Copy report',
+      'Download JSON', 'Include cursor', 'Close Redline (Esc)', 'Border color, #b65d66', 'Font size',
+      'Text box background', 'Duplicate (Ctrl+D)', 'Delete (Delete)']
+      .every(label => barPath.some(item => item?.startsWith(label))),
+    JSON.stringify(barPath));
+  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-action="delete"]').focus());
   await page.keyboard.press('Shift+Tab');
   await page.keyboard.press('Shift+Tab');
   check('Shift+Tab includes dropdowns', await focusedControl() === 'Text box background');
-  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-more-tools]').focus());
-  await page.keyboard.press('Enter');
-  const menuPath = [await focusedControl()];
-  for (let i = 0; i < 3; i++) { await page.keyboard.press('ArrowDown'); menuPath.push(await focusedControl()); }
-  const menuOpen = await evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-redline-menu]').hidden);
-  await page.keyboard.press('Escape');
-  const afterMenuEscape = await evaluate(() => ({
-    open: globalThis.__redlineTestRoot.querySelector('[data-redline-root]').open,
-    menuHidden: globalThis.__redlineTestRoot.querySelector('[data-redline-menu]').hidden,
-  }));
-  check('More tools opens by keyboard, its tools are reachable with arrows, and Escape closes only the menu',
-    menuOpen && JSON.stringify(menuPath) === JSON.stringify(['polyline', 'polygon', 'eraser', 'polyline'])
-    && afterMenuEscape.open && afterMenuEscape.menuHidden && await focusedControl() === 'More tools',
-    JSON.stringify({ menuPath, afterMenuEscape }));
+  await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-tool="crop"]').focus());
+  const capturePath = [];
+  for (let i = 0; i < 3; i++) { await page.keyboard.press('Tab'); capturePath.push(await focusedControl()); }
+  check('Capture commands are direct keyboard stops on the same strip',
+    JSON.stringify(capturePath) === JSON.stringify(['Full page', 'Copy image', 'Copy report']), JSON.stringify(capturePath));
   await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-grip]').focus());
   await page.keyboard.press('Shift+Tab');
-  check('reverse Tab wraps to the last control', await focusedControl() === 'Delete (Delete)');
+  check('reverse Tab wraps to the last control', await focusedControl() === 'Close Redline (Esc)');
   await page.keyboard.press('Tab');
-  check('forward Tab wraps to the first control', await focusedControl() === 'Move toolbar');
+  check('forward Tab wraps to the first control', await focusedControl() === 'Move strip vertically');
 
   const [jsonDownload] = await Promise.all([
     page.waitForEvent('download', { timeout: 20000 }),
@@ -618,7 +616,7 @@ try {
   await pickColor('stroke', 'issue');
   await styleControl('[data-treatment="outline-fill"]');
   await styleControl('[data-fill-opacity="0.5"]');
-  // Below the dragged toolbar's style row, which would otherwise take the pointer.
+  // Below the dragged toolbar, which would otherwise take the pointer.
   await page.mouse.move(120, 400); await page.mouse.down();
   await page.mouse.move(380, 560, { steps: 4 }); await page.mouse.up();
   await page.waitForTimeout(200);

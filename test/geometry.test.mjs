@@ -107,6 +107,20 @@ test('an outline-only shape is hit on its outline, not in its empty interior', (
   assert.equal(hitTestMark({ ...ellipse, fillOpacity: 0.5, outline: false }, { x: 300, y: 200 }, 6, measurer), true);
 });
 
+test('a rectangle label is a centred clipped text primitive attached to the rectangle', () => {
+  const box = {
+    id: 'labelled', type: 'rectangle', color: '#B65D66', width: 2, fillOpacity: 1,
+    start: { x: 10, y: 20 }, end: { x: 210, y: 120 }, text: 'Room name', fontSize: 20,
+  };
+  const primitives = markPrimitives(box, measurer);
+  assert.equal(primitives.length, 2);
+  assert.equal(primitives[1].kind, 'text');
+  assert.equal(primitives[1].anchor, 'middle');
+  assert.equal(primitives[1].font.size, 20);
+  assert.deepEqual(primitives[1].clip, { x: 10, y: 20, width: 200, height: 100 });
+  assert.equal(primitives[1].lines.map(line => line.text).join(' '), 'Room name');
+});
+
 test('the topmost painted mark wins; a distant outline is not picked', () => {
   const big = { id: 'big', type: 'rectangle', color: '#000', width: 2, start: { x: 0, y: 0 }, end: { x: 800, y: 600 } };
   const small = { id: 'small', type: 'line', color: '#000', width: 2, start: { x: 380, y: 300 }, end: { x: 420, y: 300 } };

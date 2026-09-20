@@ -62,12 +62,9 @@ export function helpers({ page, access, scratch }) {
   };
   const exportJSON = async () => JSON.parse((await download(() => click('[data-redline-action="json"]'))).buffer.toString('utf8'));
   const exportPNG = async () => (await download(() => click('[data-redline-action="download"]'))).buffer;
-  /** Choose a More actions item with the keyboard only. */
+  /** Activate a command-strip action with the keyboard only. */
   const menuByKeyboard = async action => {
-    await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-more-actions]').focus());
-    await page.keyboard.press('Enter');
-    for (let i = 0; i < 30 && await active() !== action; i++) await page.keyboard.press('ArrowDown');
-    if (await active() !== action) throw new Error(`Menu item not reachable by keyboard: ${action}`);
+    await evaluate(value => globalThis.__redlineTestRoot.querySelector(`[data-redline-toolbar] [data-redline-action="${value}"]`).focus(), action);
     await page.keyboard.press('Enter');
   };
   const pixels = (buffer, points) => evaluate(async ({ base64, points }) => {
@@ -127,4 +124,3 @@ export async function setCaptureDelay(worker, ms) {
     globalThis.__redlineCaptureDelay = delay;
   }, ms);
 }
-

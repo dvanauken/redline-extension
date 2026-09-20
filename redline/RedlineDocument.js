@@ -21,10 +21,12 @@ import { CURSOR_FIELDS, sanitizeCursor } from './RedlineCursor.js';
 import {
   LEGEND_FIELDS, isBulletLabel, legendToJSON, sanitizeExplanation, sanitizeLegend,
 } from './RedlineLegend.js';
-import { CLOSED_TYPES, DECORATIONS, LINE_TYPES, normalizeLineEnds, defaultDecorations } from './RedlineStyles.js';
+import {
+  CLOSED_TYPES, DECORATIONS, FRAMED_TYPES, LINE_TYPES, normalizeLineEnds, defaultDecorations,
+} from './RedlineStyles.js';
 
 const VALID_TYPES = new Set([
-  'pen', 'arrow', 'rectangle', 'ellipse', 'note', 'bullet', 'textbox', 'brush', 'line', 'polyline', 'polygon',
+  'pen', 'arrow', 'rectangle', 'note', 'textbox', 'ellipse', 'bullet', 'brush', 'line', 'polyline', 'polygon',
 ]);
 
 export const HISTORY_LIMIT = 200;
@@ -34,17 +36,17 @@ const BASE_FIELDS = ['id', 'type', 'color', 'width', 'intent'];
 const FILL_FIELDS = ['fill', 'fillOpacity', 'outline', 'savedFill'];
 const DECORATION_FIELDS = ['startDecoration', 'endDecoration'];
 const TYPE_FIELDS = {
-  pen: ['points', 'opacity'],
-  brush: ['points', 'opacity'],
-  polyline: ['points', 'opacity', ...DECORATION_FIELDS],
-  polygon: ['points', 'opacity', ...FILL_FIELDS],
+  pen: ['points', 'opacity', 'rotation'],
+  brush: ['points', 'opacity', 'rotation'],
+  polyline: ['points', 'opacity', 'rotation', ...DECORATION_FIELDS],
+  polygon: ['points', 'opacity', 'rotation', ...FILL_FIELDS],
   line: ['start', 'end', ...DECORATION_FIELDS],
   arrow: ['start', 'end', ...DECORATION_FIELDS],
-  rectangle: ['start', 'end', ...FILL_FIELDS],
-  ellipse: ['start', 'end', ...FILL_FIELDS],
+  rectangle: ['start', 'end', 'rotation', 'text', 'fontSize', ...FILL_FIELDS],
+  ellipse: ['start', 'end', 'rotation', ...FILL_FIELDS],
   note: ['point', 'text', 'number', 'marker'],
   bullet: ['point', 'label', 'text'],
-  textbox: ['start', 'end', 'text', 'fontSize', 'backgroundOpacity'],
+  textbox: ['start', 'end', 'text', 'fontSize', 'backgroundOpacity', 'rotation'],
 };
 const DOCUMENT_FIELDS = ['width', 'height', 'annotations', 'crop', 'outputScale', 'legend', 'cursor'];
 
@@ -79,6 +81,19 @@ function sanitizeDecoration(value, fallback, name) {
   return value;
 }
 
+/**
+ * Clockwise degrees in [0, 360), or 0 when absent. A rotation that is not a
+ * finite number rejects the import rather than silently straightening the mark.
+ */
+export function sanitizeRotation(value) {
+  if (value === undefined || value === null) return 0;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new TypeError(`Invalid rotation: expected a number of degrees, got ${String(value).slice(0, 40)}`);
+  }
+  const degrees = Math.round((((value % 360) + 360) % 360) * 1e6) / 1e6;
+  return degrees === 360 ? 0 : degrees;
+}
+
 /** Return a validated, detached annotation object. */
 export function sanitizeAnnotation(annotation) {
   if (!annotation || !VALID_TYPES.has(annotation.type)) {
@@ -108,6 +123,11 @@ export function sanitizeAnnotation(annotation) {
   // infer intent from a hex value.
   const intent = String(annotation.intent ?? '').trim().slice(0, 32);
   if (intent) base.intent = intent;
+
+  // Framed marks turn about the centre of their unrotated box. Upright marks
+  // omit the field, so they serialise exactly as before.
+  const rotation = FRAMED_TYPES.has(type) ? sanitizeRotation(annotation.rotation) : 0;
+  const rotationFields = rotation ? { rotation } : {};
 
   // `fill` defaults to the stroke colour, which is what lets one swatch set
   // stroke and fill together. Painted fill fields remain absent on outlines;
@@ -139,7 +159,7 @@ export function sanitizeAnnotation(annotation) {
       : [];
     if (points.length < 2) throw new TypeError('A path annotation requires at least two points.');
     const opacity = Math.min(1, Math.max(0, finiteNumber(annotation.opacity, type === 'brush' ? 0.35 : 1)));
-    return { ...base, points, opacity, ...decorationFields };
+    return { ...base, points, opacity, ...decorationFields, ...rotationFields };
   }
 
   if (type === 'bullet') {
@@ -180,14 +200,18 @@ export function sanitizeAnnotation(annotation) {
       text: String(annotation.text ?? '').trim(),
       fontSize: Math.max(10, finiteNumber(annotation.fontSize, 16)),
       backgroundOpacity: Math.min(1, Math.max(0, finiteNumber(annotation.backgroundOpacity, 0.75))),
+      ...rotationFields,
     };
   }
 
+  const rectangleText = type === 'rectangle' ? String(annotation.text ?? '').trim() : '';
   return {
     ...base,
     start: sanitizePoint(annotation.start),
     end: sanitizePoint(annotation.end),
     ...decorationFields,
+    ...rotationFields,
+    ...(rectangleText ? { text: rectangleText, fontSize: Math.max(10, finiteNumber(annotation.fontSize, 16)) } : {}),
   };
 }
 

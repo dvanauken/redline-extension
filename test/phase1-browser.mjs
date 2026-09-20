@@ -383,8 +383,9 @@ try {
       const root = globalThis.__redlineTestRoot;
       const rect = node => { const box = node.getBoundingClientRect(); return { left: box.left, right: box.right, top: box.top, bottom: box.bottom, width: box.width }; };
       const bar = root.querySelector('[data-redline-toolbar]');
-      const essentials = ['[data-redline-action="undo"]', '[data-redline-action="redo"]', '[data-redline-action="copy"]', '[data-redline-action="close"]',
-        '[data-redline-more-tools]', '[data-redline-more-actions]', '[data-redline-pin]', '[data-redline-grip]', '[data-redline-mode="annotate"]', '[data-redline-mode="browse"]']
+      const essentials = ['[data-redline-action="undo"]', '[data-redline-action="redo"]', '[data-redline-action="clear"]', '[data-redline-action="close"]',
+        '[data-redline-action="fullPage"]', '[data-redline-action="copy"]', '[data-redline-pin]', '[data-redline-grip]', '[data-redline-mode-toggle]',
+        '[data-redline-toolbar] [data-redline-tool="select"]', '[data-redline-toolbar] [data-redline-tool="eraser"]']
         .map(selector => {
           const node = root.querySelector(selector);
           const box = rect(node);
@@ -394,16 +395,14 @@ try {
       const reachable = tools.filter(tool => [...root.querySelectorAll(`[data-redline-tool="${tool}"]`)]
         .some(node => node.closest('[data-redline-menu]') ? !node.hidden : node.checkVisibility()));
       const context = root.querySelector('[data-redline-context]');
-      const report = root.querySelector('[data-redline-toolbar] [data-redline-action="report"]');
       return {
         width: innerWidth, bar: rect(bar), overflow: bar.scrollWidth - bar.clientWidth, essentials, reachable: reachable.length,
         context: context.hidden ? null : rect(context),
-        reportWidth: report.checkVisibility() ? report.getBoundingClientRect().width : 0,
       };
     });
   };
   const layouts = [];
-  for (const width of [1920, 1200, 800, 420]) {
+  for (const width of [1920, 1200]) {
     const layout = await layoutAt(width);
     layouts.push(layout);
     check(`at ${width}px the bar fits without scrolling and essential actions are visible`,
@@ -412,40 +411,33 @@ try {
       && (!layout.context || (layout.context.left >= 0 && layout.context.right <= width)),
       JSON.stringify({ bar: layout.bar, overflow: layout.overflow, bad: layout.essentials.filter(item => !item.visible || !item.inside), reachable: layout.reachable, context: layout.context }));
   }
-  // Phase 3 intentionally added a labelled Copy report button beside Copy image;
-  // Limit the entire bar as well as preserving the original controls' budget.
-  check('the main bar stays under 1200px including Copy report at 1920px',
-    layouts[0].bar.width < 1200 && layouts[0].bar.width - layouts[0].reportWidth < 1100,
-    JSON.stringify({ bar: layouts[0].bar.width, copyReport: layouts[0].reportWidth }));
+  check('the single strip spans the viewport at both supported review widths',
+    layouts.every(layout => Math.abs(layout.bar.width - (layout.width - 16)) <= 1), JSON.stringify(layouts.map(layout => layout.bar)));
 
-  await page.setViewportSize({ width: 800, height: 800 });
+  await page.setViewportSize({ width: 1200, height: 800 });
   await page.waitForTimeout(200);
-  const menuLayout = await evaluate(async () => {
+  const stripLayout = await evaluate(() => {
     const root = globalThis.__redlineTestRoot;
     const bar = root.querySelector('[data-redline-toolbar]');
-    const before = bar.getBoundingClientRect().width;
-    const results = [];
-    for (const selector of ['[data-redline-more-tools]', '[data-redline-more-actions]']) {
-      root.querySelector(selector).click();
-      await new Promise(resolve => requestAnimationFrame(resolve));
-      const menu = [...root.querySelectorAll('[data-redline-menu]')].find(node => !node.hidden);
-      const box = menu.getBoundingClientRect();
-      results.push({ selector, barWidth: bar.getBoundingClientRect().width, inside: box.left >= 0 && box.right <= innerWidth && box.bottom <= innerHeight,
-        insideBar: bar.contains(menu), items: [...menu.querySelectorAll('[role^="menuitem"]')].filter(node => !node.hidden).map(node => node.textContent.trim().split(/\s{2,}|[A-Z] ·/)[0]) });
-      root.querySelector(selector).click();
-    }
-    return { before, results };
+    const capture = root.querySelector('[data-redline-strip-section="capture"]');
+    return {
+      menuCount: root.querySelectorAll('[data-redline-menu]').length,
+      barWidth: bar.getBoundingClientRect().width,
+      fits: bar.scrollWidth <= bar.clientWidth + 1,
+      captureActions: [...capture.querySelectorAll('[data-redline-tool], [data-redline-action]')]
+        .map(node => node.dataset.redlineTool || node.dataset.redlineAction),
+    };
   });
-  check('menus open beside the bar without widening it or being clipped',
-    menuLayout.results.every(item => item.barWidth === menuLayout.before && item.inside && !item.insideBar), JSON.stringify(menuLayout));
-  check('More actions offers PNG, JSON, import and Clear',
-    ['Download PNG', 'Download JSON', 'Import annotations…', 'Clear all marks…'].every(label => menuLayout.results[1].items.some(item => item.startsWith(label))),
-    JSON.stringify(menuLayout.results[1].items));
+  check('the full-width strip has no overflow menu and fits at 1200px',
+    stripLayout.menuCount === 0 && stripLayout.fits && stripLayout.barWidth >= 1180, JSON.stringify(stripLayout));
+  check('Capture keeps Crop, Full page, Copy image and Copy report together on the strip',
+    ['crop', 'fullPage', 'copy', 'report'].every(action => stripLayout.captureActions.includes(action)),
+    JSON.stringify(stripLayout.captureActions));
 
   await page.setViewportSize({ width: 1200, height: 800 });
   await page.waitForTimeout(200);
   await loadDocument('stable', [{ id: 'stable-rect', type: 'rectangle', color: '#16A34A', start: { x: 300, y: 300 }, end: { x: 600, y: 500 } }]);
-  const essentialRects = () => evaluate(() => ['undo', 'redo', 'copy', 'close'].map(action => {
+  const essentialRects = () => evaluate(() => ['undo', 'redo', 'clear', 'close'].map(action => {
     const box = globalThis.__redlineTestRoot.querySelector(`[data-redline-action="${action}"]`).getBoundingClientRect();
     return [Math.round(box.left), Math.round(box.top)];
   }));
@@ -741,9 +733,8 @@ try {
     const pairs = [
       ['[data-redline-target]', 'style row label'],
       ['[data-redline-field] > span', 'field caption'],
-      ['[data-redline-mode="annotate"]', 'pressed mode'],
-      ['[data-redline-action="copy"]', 'Copy image'],
-      ['[data-redline-tool][data-active]', 'active tool'],
+      ['[data-redline-strip-section="capture"] [data-redline-action="copy"]', 'Copy image'],
+      ['[data-redline-strip-section="drawing"] [data-redline-tool][data-active]', 'active tool'],
     ];
     return pairs.map(([selector, name]) => {
       const node = [...root.querySelectorAll(selector)].find(element => element.checkVisibility());

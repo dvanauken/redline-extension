@@ -23,6 +23,7 @@ const suites = [
   ['phase 1 browser', process.execPath, [path.join(HERE, 'phase1-browser.mjs'), ...passthrough]],
   ['phase 1 lead review', process.execPath, [path.join(HERE, 'phase1-review-browser.mjs'), ...passthrough]],
   ['click-to-type browser', process.execPath, [path.join(HERE, 'text-browser.mjs'), ...passthrough]],
+  ['rectangle direct-label browser', process.execPath, [path.join(HERE, 'rectangle-label-browser.mjs'), ...passthrough]],
   ['phase 2 bullets and legend browser', process.execPath, [path.join(HERE, 'phase2-browser.mjs'), ...passthrough]],
   ['phase 2 lead review', process.execPath, [path.join(HERE, 'phase2-review-browser.mjs'), ...passthrough]],
   ['phase 3 pointer, report, preview and capture browser', process.execPath, [path.join(HERE, 'phase3-browser.mjs'), ...passthrough]],
@@ -30,6 +31,8 @@ const suites = [
   ['phase 3 lead review', process.execPath, [path.join(HERE, 'phase3-review-browser.mjs'), ...passthrough]],
   ['page eyedropper browser', process.execPath, [path.join(HERE, 'eyedropper-browser.mjs'), ...passthrough]],
   ['mode layout preservation', process.execPath, [path.join(HERE, 'mode-layout-browser.mjs'), ...passthrough]],
+  ['selection handles and rotation browser', process.execPath, [path.join(HERE, 'transform-browser.mjs'), ...passthrough]],
+  ['full-page capture and consolidated menu', process.execPath, [path.join(HERE, 'fullpage-browser.mjs'), ...passthrough]],
 ];
 if (!process.argv.includes('--skip-watcher')) {
   suites.push(['reload watcher (mocked)', 'pwsh', ['-NoProfile', '-File', path.join(HERE, 'watch-reload.ps1')]]);

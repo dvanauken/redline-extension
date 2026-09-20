@@ -75,6 +75,19 @@ test('a fill differing from the stroke is kept, as the solid style needs', () =>
   assert.equal(added.fillOpacity, 1);
 });
 
+test('a rectangle label and its font size survive JSON and undo as part of the rectangle', () => {
+  const doc = new RedlineDocument();
+  const added = doc.add(box({ text: 'Direct label', fontSize: 20, fillOpacity: 0.5 }));
+  assert.equal(added.text, 'Direct label');
+  assert.equal(added.fontSize, 20);
+  const reloaded = new RedlineDocument();
+  assert.deepEqual(reloaded.load(doc.toJSON()).ignoredFields, []);
+  assert.deepEqual(reloaded.annotations[0], added);
+  doc.replace(added.id, { ...added, text: 'Edited label' });
+  doc.undo();
+  assert.equal(doc.annotations[0].text, 'Direct label');
+});
+
 test('an unfilled mark serialises exactly as it did before fills existed', () => {
   const doc = new RedlineDocument();
   const added = doc.add(box({ color: '#DC2626', fillOpacity: 0 }));

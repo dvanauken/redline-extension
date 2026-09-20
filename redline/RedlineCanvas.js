@@ -48,6 +48,16 @@ function paint(ctx, primitive) {
 }
 
 export function drawPrimitive(ctx, primitive) {
+  if (primitive.rotation?.angle) {
+    const { angle, cx, cy } = primitive.rotation;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((angle * Math.PI) / 180);
+    ctx.translate(-cx, -cy);
+    drawPrimitive(ctx, { ...primitive, rotation: null });
+    ctx.restore();
+    return;
+  }
   if (primitive.kind === 'path') {
     if (!primitive.points.length) return;
     tracePath(ctx, primitive);

@@ -71,7 +71,7 @@ async function run(dpr, { full }) {
     // -----------------------------------------------------------------------
     // Pointer proxy: off by default, keyboard placement, pixels and hotspot
     check(`${tag} Include cursor is off by default and the document has no cursor`,
-      await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-cursor-toggle]').getAttribute('aria-checked')) === 'false'
+      await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-cursor-toggle]').getAttribute('aria-pressed')) === 'false'
       && !('cursor' in (await h.exportJSON()).document) && await h.cursorAt() === null);
 
     // Regression found during Phase 3 integration: a colour dialog's close event
@@ -99,10 +99,10 @@ async function run(dpr, { full }) {
     for (let i = 0; i < 5; i++) await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
     const placed = { target: await h.target(), cursor: await h.cursorAt(), active: await h.active(),
-      checked: await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-cursor-toggle]').getAttribute('aria-checked')) };
-    check(`${tag} keyboard placement: arrows move screen pixels, Enter finishes and focus returns to More actions`,
+      checked: await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-cursor-toggle]').getAttribute('aria-pressed')) };
+    check(`${tag} keyboard placement: arrows move screen pixels, Enter finishes and focus returns to Include cursor`,
       placed.target === 'Pointer' && placed.cursor.x === 700 && placed.cursor.y === 405 && placed.checked === 'true'
-      && placed.active === 'More actions', JSON.stringify(placed));
+      && placed.active === 'cursorToggle', JSON.stringify(placed));
     if (full) await page.screenshot({ path: path.join(SHOTS, `dpr${dpr}-pointer-selected.png`) });
 
     const pointerPng = await h.exportPNG();
@@ -139,7 +139,7 @@ async function run(dpr, { full }) {
     await page.waitForTimeout(800);
     const followed = await h.cursorAt();
     check(`${tag} a following pointer moves to where the mouse pressed and then rested`, near(followed.x, 420, 1) && near(followed.y, 690, 1), JSON.stringify(followed));
-    const copy = await h.rect('[data-redline-toolbar] [data-redline-action="copy"]');
+    const copy = await h.rect('[data-redline-strip-section="capture"] [data-redline-action="copy"]');
     await page.mouse.move(copy.x + copy.width / 2, copy.y + copy.height / 2, { steps: 30 });
     await page.waitForTimeout(900);
     const afterHover = await h.cursorAt();
@@ -309,7 +309,7 @@ async function run(dpr, { full }) {
     const closed = { active: await h.active(), dock: await h.rect('[data-redline-dock]'),
       pinned: await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-dock]').hasAttribute('data-pinned')) };
     check(`${tag} closing the preview returns focus and leaves toolbar placement and pinning alone`,
-      closed.active === 'More actions' && closed.pinned && near(closed.dock.x, dockBefore.x, 0.5) && near(closed.dock.y, dockBefore.y, 0.5), JSON.stringify(closed));
+      closed.active === 'preview' && closed.pinned && near(closed.dock.x, dockBefore.x, 0.5) && near(closed.dock.y, dockBefore.y, 0.5), JSON.stringify(closed));
     const regular = await h.exportPNG();
     const handleInPng = (await h.pixels(regular, [[(760 - 4.4 - 100) * dpr, (160 - 120) * dpr]])).samples[0];
     check(`${tag} preview/export parity: the ordinary PNG matches the previewed pixels, and neither shows the handles`,
@@ -328,12 +328,12 @@ async function run(dpr, { full }) {
         ],
       }, 'report');
       await page.bringToFront();
-      const reportButton = await h.rect('[data-redline-toolbar] [data-redline-action="report"]');
-      check(`${tag} Copy report sits beside Copy image on the bar at 1200 px`, reportButton?.visible && reportButton.x > copy.x, JSON.stringify(reportButton));
+      const reportButton = await h.rect('[data-redline-strip-section="capture"] [data-redline-action="report"]');
+      check(`${tag} Copy report is visible with Copy image in Capture at 1200 px`, reportButton?.visible && reportButton.width > 0, JSON.stringify(reportButton));
       const downloads = [];
       const onDownload = file => downloads.push(file.suggestedFilename());
       page.on('download', onDownload);
-      await h.press('[data-redline-toolbar] [data-redline-action="report"]');
+      await h.press('[data-redline-strip-section="capture"] [data-redline-action="report"]');
       await h.idle();
       await page.waitForTimeout(400);
       const clip = await page.evaluate(async () => {
@@ -403,7 +403,7 @@ async function run(dpr, { full }) {
       await b.load({ width: 1200, height: 800, annotations: [bullet('x1', '1', 300, 300, 'Explained on a blocked page')] }, 'blocked');
       const blockedFiles = [];
       blocked.on('download', file => blockedFiles.push(file));
-      await b.press('[data-redline-toolbar] [data-redline-action="report"]');
+      await b.press('[data-redline-strip-section="capture"] [data-redline-action="report"]');
       await b.idle();
       await waitUntil(() => blockedFiles.length >= 2, 'fallback downloads', 10000);
       const textFile = blockedFiles.find(file => file.suggestedFilename().endsWith('-report.txt'));
@@ -417,7 +417,7 @@ async function run(dpr, { full }) {
         Boolean(pngFile) && reportText.includes('1  Explained on a blocked page') && reportText.includes(`saved separately as ${pngFile?.suggestedFilename()}`)
         && /^Clipboard unavailable \(.*permissions policy.*\): downloaded the screenshot as .*\.png and the report text as .*-report\.txt\. Nothing was copied\.$/.test(blockedMessage),
         JSON.stringify({ files: blockedFiles.map(file => file.suggestedFilename()), blockedMessage }));
-      const imageFallback = await b.download(() => b.press('[data-redline-toolbar] [data-redline-action="copy"]'));
+      const imageFallback = await b.download(() => b.press('[data-redline-strip-section="capture"] [data-redline-action="copy"]'));
       check(`${tag} Copy image on that page downloads instead and reports the refusal`,
         imageFallback.buffer.subarray(1, 4).toString() === 'PNG' && /^The clipboard refused the image \(.*\); downloaded PNG instead\.$/.test(await b.message()), await b.message());
       await blockedAccess.dispose();
@@ -516,29 +516,22 @@ async function run(dpr, { full }) {
         await page.waitForTimeout(250);
         const layout = await evaluate(() => {
           const root = globalThis.__redlineTestRoot;
-          const bar = root.querySelector('[data-redline-toolbar]').getBoundingClientRect();
-          const inside = node => { const box = node.getBoundingClientRect(); return node.checkVisibility() && box.left >= 0 && box.right <= innerWidth + 0.5; };
-          const reportOnBar = root.querySelector('[data-redline-toolbar] [data-redline-action="report"]');
-          const reportTwin = root.querySelector('[data-redline-twin="report"]');
+          const toolbar = root.querySelector('[data-redline-toolbar]');
+          const bar = toolbar.getBoundingClientRect();
+          const items = [...toolbar.querySelectorAll('[data-redline-tool], [data-redline-action]')]
+            .filter(node => !node.hidden).map(node => node.dataset.redlineTool ?? node.dataset.redlineAction);
           return {
             fits: bar.left >= 0 && bar.right <= innerWidth + 0.5,
-            essentials: ['undo', 'redo', 'copy', 'close'].every(action => inside(root.querySelector(`[data-redline-toolbar] [data-redline-action="${action}"]`))),
-            report: reportOnBar.checkVisibility() ? (inside(reportOnBar) ? 'bar' : 'clipped') : (!reportTwin.hidden ? 'menu' : 'missing'),
+            noOverflow: toolbar.scrollWidth <= toolbar.clientWidth + 1,
+            noMenus: root.querySelectorAll('[data-redline-menu]').length === 0,
+            items,
           };
         });
-        await h.press('[data-redline-more-actions]');
-        const menu = await evaluate(() => {
-          const menu = [...globalThis.__redlineTestRoot.querySelectorAll('[data-redline-menu]')].find(node => !node.hidden);
-          const box = menu.getBoundingClientRect();
-          const items = [...menu.querySelectorAll('[role^="menuitem"]')].filter(node => !node.hidden).map(node => node.dataset.redlineAction ?? node.dataset.redlineTool);
-          return { inside: box.left >= 0 && box.right <= innerWidth + 0.5 && box.top >= 0, items };
-        });
-        await page.screenshot({ path: path.join(SHOTS, `dpr${dpr}-${width}-more-actions.png`) });
-        await page.keyboard.press('Escape');
-        check(`${tag} at ${width}px the bar fits, essentials stay visible, and Copy report, preview and pointer controls stay reachable`,
-          layout.fits && layout.essentials && ['bar', 'menu'].includes(layout.report) && menu.inside
-          && ['preview', 'reportFallback', 'cursorToggle', 'cursorPlace'].every(item => menu.items.includes(item))
-          && (layout.report === 'bar' || menu.items.includes('report')), JSON.stringify({ layout, menu }));
+        await page.screenshot({ path: path.join(SHOTS, `dpr${dpr}-${width}-command-strip.png`) });
+        check(`${tag} at ${width}px one strip contains every capture and pointer command`,
+          layout.fits && layout.noMenus && (width < 1200 || layout.noOverflow)
+          && ['undo', 'redo', 'clear', 'close', 'preview', 'report', 'reportFallback', 'cursorToggle', 'cursorPlace']
+            .every(item => layout.items.includes(item)), JSON.stringify(layout));
         await page.keyboard.press('v');
         const proxy = await h.cursorAt();
         await page.mouse.click(proxy.screenX + 3, proxy.screenY + 8);

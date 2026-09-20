@@ -68,22 +68,24 @@ dialog[data-redline-eyedropper] {
 [data-redline-dock] {
   position: absolute;
   z-index: 4;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: max-content;
-  max-width: calc(100vw - 16px);
+  top: 8px;
+  left: 8px;
+  width: calc(100vw - 16px);
+  max-width: none;
   font: 500 13px/1.2 var(--rl-font);
   color: var(--rl-text);
 }
-[data-redline-dock][data-pinned] { left: 10px; top: 10px; transform: none; }
+[data-redline-dock][data-pinned] { left: 8px; top: 8px; transform: none; }
 [data-redline-dock][data-positioned] { transform: none; }
 
 [data-redline-toolbar] {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 2px;
-  max-width: calc(100vw - 16px);
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
   padding: 4px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -95,7 +97,7 @@ dialog[data-redline-eyedropper] {
   white-space: nowrap;
 }
 
-[data-redline-group] { display: flex; align-items: center; gap: 2px; flex: none; }
+[data-redline-group] { display: flex; align-items: center; gap: 1px; flex: none; }
 [data-redline-separator] {
   flex: none;
   width: 1px;
@@ -123,11 +125,14 @@ dialog[data-redline-eyedropper] {
   cursor: pointer;
 }
 [data-redline-toolbar] [data-redline-group="tools"] > button,
+[data-redline-toolbar] [data-redline-group="drawing"] > button,
 [data-redline-toolbar] [data-redline-group="history"] > button,
+[data-redline-toolbar] [data-redline-group="capture"] > button,
+[data-redline-toolbar] [data-redline-group="files"] > button,
+[data-redline-toolbar] [data-redline-group="pointer"] > button,
+[data-redline-toolbar] [data-redline-group="recovery"] > button,
 [data-redline-toolbar] [data-redline-group="frame"] > button,
-[data-redline-toolbar] [data-redline-tool="crop"],
-[data-redline-toolbar] [data-redline-more-actions] { padding: 0; }
-[data-redline-toolbar] [data-redline-more-tools] { gap: 1px; padding: 0 4px 0 8px; }
+[data-redline-toolbar] [data-redline-tool="crop"] { padding: 0; }
 
 [data-redline-dock] button svg {
   display: block;
@@ -152,7 +157,6 @@ dialog[data-redline-eyedropper] {
 [data-redline-dock] button:disabled { opacity: 0.42; cursor: not-allowed; }
 [data-redline-dock] button:focus-visible,
 [data-redline-dock] select:focus-visible,
-[data-redline-menu] :focus-visible,
 [data-redline-crop-panel] :focus-visible,
 [data-redline-text-controls] button:focus-visible {
   outline: 2px solid var(--rl-focus);
@@ -170,38 +174,15 @@ dialog[data-redline-eyedropper] {
 [data-redline-grip] svg { width: 14px !important; fill: currentColor !important; stroke: none !important; }
 [data-redline-grip]:active { cursor: grabbing !important; }
 
-/* Annotate / Browse, with a small explicit state dot. */
-[data-redline-mode-switch] {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex: none;
-  padding: 2px 2px 2px 8px;
+/* One compact mode toggle: its icon describes the mode a click will enter. */
+[data-redline-mode-toggle] {
+  width: 36px;
+  padding: 0 !important;
   background: var(--rl-control);
   border: 1px solid var(--rl-divider);
-  border-radius: 9px;
 }
-[data-redline-mode-indicator] {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  margin-right: 3px;
-  border-radius: 50%;
-  background: var(--rl-accent);
-  box-shadow: 0 0 0 3px var(--rl-accent-soft);
-}
-[data-redline-dock][data-browse] [data-redline-mode-indicator] {
-  background: transparent;
-  box-shadow: inset 0 0 0 2px var(--rl-idle-indicator);
-}
-[data-redline-mode-switch] button {
-  height: 30px !important;
-  min-width: 30px !important;
-  padding: 0 9px !important;
-  font-weight: 600 !important;
-}
-[data-redline-mode-switch] button[aria-pressed="true"],
-[data-redline-mode-switch] button[aria-pressed="true"]:hover:not(:disabled) {
+[data-redline-mode-toggle][aria-pressed="true"],
+[data-redline-mode-toggle][aria-pressed="true"]:hover:not(:disabled) {
   color: #FFFFFF;
   background: var(--rl-text);
   border-color: var(--rl-text);
@@ -210,7 +191,7 @@ dialog[data-redline-eyedropper] {
 
 /* Copy image is the main hand-off, so it reads as the primary action. */
 [data-redline-toolbar] [data-redline-action="copy"] {
-  padding: 0 12px;
+  padding: 0;
   color: #FFFFFF;
   background: var(--rl-accent-text);
   border-color: var(--rl-accent-text);
@@ -219,7 +200,7 @@ dialog[data-redline-eyedropper] {
 [data-redline-toolbar] [data-redline-action="copy"]:hover:not(:disabled) { background: #873C45; }
 /* Copy report sits beside it as the secondary hand-off. */
 [data-redline-toolbar] [data-redline-action="report"] {
-  padding: 0 10px;
+  padding: 0;
   color: var(--rl-accent-text);
   background: var(--rl-control);
   border-color: var(--rl-accent-line);
@@ -227,35 +208,40 @@ dialog[data-redline-eyedropper] {
 }
 [data-redline-toolbar] [data-redline-action="report"]:hover:not(:disabled) { background: var(--rl-accent-soft); }
 
-[data-redline-toolbar][data-compact-copy] [data-redline-action="copy"] { padding: 0; }
-[data-redline-toolbar][data-compact-copy] [data-redline-action="copy"] [data-redline-label],
-[data-redline-toolbar][data-compact-mode] [data-redline-mode-switch] [data-redline-label] { display: none; }
-[data-redline-toolbar][data-compact-mode] [data-redline-mode-switch] button { padding: 0 !important; width: 30px; }
 [data-redline-toolbar][data-density="compact"] { gap: 1px; padding: 3px; }
-[data-redline-toolbar][data-density="compact"] button { min-width: 32px; height: 32px; }
-[data-redline-toolbar][data-density="compact"] [data-redline-separator] { margin: 0 2px; }
-[data-redline-toolbar][data-density="compact"] [data-redline-mode-switch] { padding-left: 6px; }
-[data-redline-toolbar][data-density="compact"] [data-redline-mode-switch] button { height: 26px !important; min-width: 26px !important; width: 26px; }
+[data-redline-toolbar][data-density="compact"] > button,
+[data-redline-toolbar][data-density="compact"] > [data-redline-group] > button {
+  min-width: 25px;
+  width: 25px;
+  height: 30px;
+}
+[data-redline-toolbar][data-density="compact"] [data-redline-separator] { margin: 0; }
+[data-redline-toolbar][data-density="compact"] [data-redline-mode-toggle] { width: 25px; }
 
-/* ---- Contextual style row ---------------------------------------------- */
+/* ---- Contextual controls in the single toolbar strip ------------------- */
 [data-redline-context] {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
+  position: static;
   display: flex;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px 6px;
   box-sizing: border-box;
-  width: max-content;
-  max-width: calc(100vw - 16px);
-  padding: 4px 6px;
-  background: var(--rl-chrome);
-  border: 1px solid var(--rl-divider);
-  border-radius: 10px;
-  box-shadow: var(--rl-shadow);
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   font: 500 12px/1.2 var(--rl-font);
 }
+[data-redline-context]::-webkit-scrollbar { display: none; }
 [data-redline-context][hidden] { display: none; }
 [data-redline-target] {
   display: inline-flex;
@@ -282,6 +268,10 @@ dialog[data-redline-eyedropper] {
   background: var(--rl-accent);
 }
 [data-redline-control] { display: inline-flex; align-items: center; gap: 2px; }
+[data-redline-context] > [data-redline-control],
+[data-redline-context] > [data-redline-target],
+[data-redline-context] > [data-redline-hint],
+[data-redline-context] > [data-redline-message] { flex: 0 0 auto; }
 [data-redline-context] button { height: 30px; min-width: 30px; padding: 0 8px; border-radius: 6px; }
 [data-redline-context] [data-redline-control="treatment"],
 [data-redline-context] [data-redline-control="fillOpacity"],
@@ -297,7 +287,7 @@ dialog[data-redline-eyedropper] {
 [data-redline-context] [data-redline-control="fillOpacity"] { padding-left: 8px; }
 [data-redline-caption] { margin-right: 4px; color: var(--rl-muted); white-space: nowrap; }
 [data-redline-end-presets] { display: inline-flex; gap: 1px; }
-[data-redline-control="ends"] { gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+[data-redline-control="ends"] { gap: 6px; flex-wrap: nowrap; min-width: max-content; max-width: none; }
 
 [data-redline-treatment-icon] rect { fill: none; stroke: currentColor; stroke-width: 1.75; }
 [data-redline-treatment-icon="outline-fill"] rect { fill: currentColor; fill-opacity: 0.3; }
@@ -343,6 +333,7 @@ dialog[data-redline-eyedropper] {
 [data-redline-hint] { max-width: 420px; color: var(--rl-muted); white-space: normal; }
 [data-redline-control="selection"] { margin-left: 2px; padding-left: 8px; border-left: 1px solid var(--rl-divider); }
 [data-redline-message] {
+  min-width: 0;
   max-width: 320px;
   overflow: hidden;
   color: var(--rl-muted);
@@ -350,67 +341,6 @@ dialog[data-redline-eyedropper] {
   white-space: nowrap;
 }
 [data-redline-message]:empty { display: none; }
-
-/* ---- Menus ------------------------------------------------------------- */
-[data-redline-menu] {
-  position: absolute;
-  z-index: 6;
-  box-sizing: border-box;
-  min-width: 232px;
-  max-width: calc(100vw - 16px);
-  padding: 4px;
-  overflow: auto;
-  color: var(--rl-text);
-  background: var(--rl-control);
-  border: 1px solid var(--rl-divider);
-  border-radius: 10px;
-  box-shadow: var(--rl-shadow);
-  font: 500 13px/1.25 var(--rl-font);
-}
-[data-redline-menu][hidden] { display: none; }
-[data-redline-menu] [role^="menuitem"] {
-  box-sizing: border-box;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  column-gap: 10px;
-  width: 100%;
-  min-height: 36px;
-  margin: 0;
-  padding: 6px 10px;
-  color: inherit;
-  background: transparent;
-  border: 0;
-  border-radius: 6px;
-  font: inherit;
-  text-align: start;
-  cursor: pointer;
-}
-[data-redline-menu] [role^="menuitem"] svg {
-  grid-row: span 2;
-  width: 18px;
-  height: 18px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.75;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-[data-redline-menu] [role^="menuitem"] small {
-  grid-column: 2;
-  color: var(--rl-muted);
-  font-size: 11px;
-  font-weight: 400;
-}
-[data-redline-menu] [role^="menuitem"]:hover:not(:disabled),
-[data-redline-menu] [role^="menuitem"]:focus-visible { background: var(--rl-hover); }
-[data-redline-menu] [role^="menuitem"][aria-checked="true"] {
-  color: var(--rl-accent-text);
-  background: var(--rl-accent-soft);
-  box-shadow: inset 3px 0 0 var(--rl-accent);
-}
-[data-redline-menu] [role^="menuitem"]:disabled { opacity: 0.45; cursor: not-allowed; }
-[data-redline-menu] [role="separator"] { height: 1px; margin: 4px 6px; background: var(--rl-divider); }
 
 /* ---- Crop -------------------------------------------------------------- */
 [data-redline-crop-layer] {
@@ -525,6 +455,10 @@ dialog[data-redline-eyedropper] {
 [data-redline-canvas][data-hover="resize-ne"], [data-redline-canvas][data-hover="resize-sw"] { cursor: nesw-resize; }
 [data-redline-canvas][data-hover="resize-n"], [data-redline-canvas][data-hover="resize-s"] { cursor: ns-resize; }
 [data-redline-canvas][data-hover="resize-e"], [data-redline-canvas][data-hover="resize-w"] { cursor: ew-resize; }
+[data-redline-canvas][data-hover="endpoint"] { cursor: crosshair; }
+[data-redline-canvas][data-hover="rotate"] {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5' stroke='%23FFFFFF' stroke-width='4.5'/%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5' stroke='%23111827' stroke-width='2'/%3E%3C/svg%3E") 12 12, grab;
+}
 [data-redline-canvas][data-tool="brush"] {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 24 24'%3E%3Cpath d='m9 11-6 6v3h9l3-3' fill='%23f4c542' stroke='%23111827' stroke-width='1.5' stroke-linejoin='round'/%3E%3Cpath d='m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4' fill='%23f4c542' stroke='%23111827' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E") 3 21, crosshair;
 }
@@ -535,10 +469,22 @@ dialog[data-redline-eyedropper] {
   stroke-width: 1.25;
   stroke-dasharray: 5 4;
 }
-[data-redline-resize] {
+/* A framed mark's frame is solid, like an Office selection; handles sit on it. */
+[data-redline-selection][data-redline-frame] { stroke-width: 1; stroke-dasharray: none; }
+[data-redline-resize] circle,
+[data-redline-rotate] circle {
   fill: #FFFFFF;
   stroke: var(--rl-selection);
-  stroke-width: 1.25;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 1px 1.5px rgba(31, 35, 40, 0.35));
+}
+[data-redline-rotate-stem] { stroke: var(--rl-selection); stroke-width: 1; }
+[data-redline-rotate-icon] {
+  fill: none;
+  stroke: var(--rl-selection);
+  stroke-width: 3.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 /* ---- Pointer proxy ----------------------------------------------------- */
@@ -616,7 +562,7 @@ dialog[data-redline-eyedropper] {
   white-space: normal;
 }
 [data-redline-bullet-next] { color: var(--rl-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-[data-redline-context] [data-redline-control="legendStyle"] { gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
+[data-redline-context] [data-redline-control="legendStyle"] { gap: 6px; flex-wrap: nowrap; min-width: max-content; max-width: none; }
 [data-redline-context] [data-redline-control="explanationActions"] [data-redline-explanation-save] {
   color: #FFFFFF;
   background: var(--rl-accent-text);

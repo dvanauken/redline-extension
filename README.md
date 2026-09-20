@@ -33,14 +33,14 @@ the extension does not fight the browser for the key.
 
 | | |
 | --- | --- |
-| Tools | select, pen, highlighter, line, arrow, rectangle, ellipse, note, bullet, text box on the bar; polyline, polygon and eraser under **More tools** |
+| Tools | **Select**, **Eraser**, pen, highlighter, line, arrow, rectangle, ellipse, polyline, polygon, note, bullet and text are all direct controls on one strip |
 | Bullets | circles labelled 1–9 or A–Z, each with an optional multiline explanation; an optional, movable and resizable **Legend** lists them on the image |
-| Styles | a style row under the toolbar edits either the selected mark or the defaults for new marks, never both, and says which |
+| Styles | contextual controls in the same toolbar strip edit either the selected mark or the defaults for new marks, never both, and say which |
 | Shapes | rectangles, ellipses and polygons take **Outline**, **Outline + fill** or **Fill only**, with fill opacity 10, 25, 50, 75 or 100% and independent outline and fill colours |
 | Line ends | lines, arrows and polylines take **None**, **Arrowhead**, **Open circle** or **Filled circle** at each end, with pictorial presets |
 | Colours | named presets (Issue, Question, Suggestion, Approved, Note, Neutral, Ink, Paper) record an intent in the export; **More colors** holds solid tints and shades; **Custom** accepts any hex value |
 | Markers | **Note labels** switches new note circles between `1, 2, 3` and `A, B, C`; the two run as separate sequences |
-| Export | **Copy image** and **Copy report** on the bar; **More actions** holds Export preview, Download PNG, Copy report text + download PNG, Download JSON, Import annotations, Include cursor, Place cursor, the reload-recovery draft actions and Clear |
+| Export | the strip’s **Capture** group keeps **Crop**, **Full page**, **Copy image**, **Copy report**, Export preview and Download PNG together |
 | Pointer | optional **Include cursor** draws a movable arrow with an exact hotspot into exports; off by default |
 | Report | **Copy report** puts the annotated screenshot and every bullet explanation and legacy note (as text) on the clipboard, or copies the text and downloads the PNG when that is all the clipboard allows |
 | Preview | **Export preview** shows the exact PNG — crop, output size, legend and pointer — before you copy or download it |
@@ -49,14 +49,17 @@ the extension does not fight the browser for the key.
 
 ### Toolbar
 
-The main bar keeps **Annotate / Browse**, the drawing tools, **Undo**, **Redo**,
-**Copy image**, **Copy report**, **Pin** and **Close** in fixed positions. When
-the window is too narrow, lower-priority tools move into **More tools**, Crop and
-Copy report move into **More actions**, and labels compact, in a fixed order, so
-Undo, Redo, Copy image and Close stay visible down to 420 CSS pixels. Menus open
-beside the bar and never widen it.
+The main bar is one icon-first strip across the viewport. It contains the
+compact **Annotate / Browse** toggle, every drawing tool, history and Clear,
+Capture, file, pointer and recovery commands, toolbar **Pin**, and **Close**.
+There is no overflow menu. At 1200px and wider every command fits on one row;
+narrower windows keep the same strip and allow horizontal scrolling.
 
-The style row below the bar shows only what applies:
+Chrome does not let an extension insert arbitrary controls into the browser's
+own toolbar. Redline's extension icon remains its launcher; the in-page strip is
+the nearest available integration surface.
+
+The contextual section in that same strip shows only what applies:
 
 | Target | Controls |
 | --- | --- |
@@ -87,7 +90,7 @@ defaults alone.
 
 ### Pick a color from the page
 
-Open **Color**, **Outline**, **Border** or **Fill** in the style row, then choose
+Open **Color**, **Outline**, **Border** or **Fill** in the contextual section, then choose
 **Pick from page**. The eyedropper shows a clean snapshot of the visible page,
 with Redline's marks and controls removed. Move over a color to see its magnified
 pixels and hex value; click to use it. Arrow keys move one captured pixel,
@@ -108,21 +111,28 @@ cancels sampling so the chosen pixel cannot be taken from a misaligned image.
 | --- | --- |
 | `V P B L A R O N U T E C` | Select, Pen, Highlighter, Line, Arrow, Rectangle, Ellipse, Note, Bullet, Text box, Eraser, Crop |
 | `Enter` on a selected bullet | edit its explanation |
+| Start typing on a selected rectangle | create or replace its attached label directly on the canvas |
+| `Enter` or double-click a selected rectangle | edit its attached label |
 | Arrow keys / Shift+arrows with the pointer selected or being placed | move the pointer 1 / 10 screen pixels |
 | `Enter` or `Esc` while placing the pointer | finish placing |
 | `Delete` with the pointer selected | leave the pointer out of exports (its position is kept) |
 | Arrow keys with the legend selected | nudge the legend 1 / 10 screen pixels |
 | Shift while drawing | squares and circles; lines and path segments snap to 45° |
 | Shift while dragging a mark | move along one axis |
+| Drag a handle of a selected mark | resize it; the opposite handle stays put, at any rotation |
+| Shift while dragging a corner handle | keep the proportions |
+| Ctrl while dragging a handle | resize about the centre |
+| Drag the round knob above a selected mark | rotate it about its centre; Shift snaps to 15° steps |
+| Drag an end handle of a selected line or arrow | move that end; Shift snaps the line to 45° |
 | Arrow keys / Shift+arrows | nudge the selected mark 1 / 10 screen pixels; a quick run is one undo step |
 | `Ctrl+D` | duplicate the selected mark (left to the browser when nothing is selected) |
 | `Delete` / `Backspace` | delete the selected mark |
 | `Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z` | undo and redo marks |
 | `Enter` or double-click | finish a polyline or polygon |
 | `Backspace` while drawing a path | remove its last point |
-| `Esc` | close a menu; else cancel an unfinished mark or explanation edit; else finish placing or deselect the pointer; else leave crop editing; else close Redline |
+| `Esc` | cancel an unfinished mark or explanation edit; else finish placing or deselect the pointer; else leave crop editing; else close Redline |
 | `F2` | switch between Annotate and Browse |
-| Tab / Shift+Tab | every toolbar and style-row control; menus and palette grids use arrow keys |
+| Tab / Shift+Tab | every command and contextual control in the strip; palette grids use arrow keys |
 
 Unfinished work has one rule: switching tools, entering Browse, closing,
 importing, clearing, undoing and exporting discard an in-progress stroke or path
@@ -130,9 +140,28 @@ and keep every completed mark. Losing window focus or opening a dialog cancels
 a drag in progress. A new polygon needs three separate points that enclose an
 area; older files with two-point polygons still load.
 
-The eraser removes what it touches: an outline-only shape is erased on its
+Selecting a rectangle, ellipse, text box, pen or highlighter stroke, polyline
+or polygon shows a frame with a round handle on every corner and at the middle
+of every edge, plus a rotate knob on a short stem above the top edge, as in
+PowerPoint. The frame, handles and knob turn with the mark, and each handle
+shows a resize pointer for the direction it faces on screen. When a shape sits
+at the top of the page, the knob moves below it. A stroke's frame surrounds
+its ink; a perfectly straight stroke has no height to stretch, so it omits the
+two handles that would only do that. Straight lines and arrows show a handle on
+each end instead, and bullets and notes stay fixed-size markers that move but
+do not resize or rotate. A rotated text box is edited in place, turned, and
+grows from its own top-left corner. Each resize or rotation is one undo step.
+
+The visible **Eraser** button removes what it touches: an outline-only shape is erased on its
 outline, not by clicking empty space inside it. Dragging the eraser across
 several marks is one undo step.
+
+To label an existing rectangle, select it and start typing. **Enter** or
+double-click also opens its in-place editor. The label is centred and clipped
+inside the rectangle, moves/resizes/rotates with it, and remains part of that
+same annotation in PNG and JSON exports. `Ctrl+Enter` or clicking away saves;
+`Esc` cancels. Saving an empty label removes only the label. Once labelled, its
+font size is available in the rectangle's contextual controls.
 
 Choose **Text** (or press **T**), click anywhere, and start typing. Text uses
 dark lettering on a 75%-opaque white background. The background expands as you
@@ -214,20 +243,20 @@ range is full.
 
 Browsers never include the operating-system cursor in `captureVisibleTab`
 images, and Redline does not ask for screen sharing to get one. Instead,
-**Include cursor** (under **More actions**, or in the export preview) draws a
+**Include cursor** (on the Pointer section of the strip, or in the export preview) draws a
 dark arrow with a white edge whose tip is the exact hotspot. It is off by
 default.
 
 When you turn it on, the pointer appears where your mouse last pressed or
 paused (for half a second) over the page or the drawing surface — including a
 hover in Browse mode followed by F2. Pressing or resting on Redline's toolbar,
-menus, style row, colour picker, dialogs, crop controls, text box editor or the
+contextual controls, colour picker, dialogs, crop controls, text box editor or the
 legend never counts, and crossing the page to reach a button is not a pause, so
 moving the mouse to **Copy image** does not move the pointer. If no such
 position is known yet, Redline enters placement: click where the pointer should
 point (and drag to fine-tune), or move it with the arrow keys and press Enter.
 
-The pointer stays **frozen** where it is. **Follow** (in its style row) makes it
+The pointer stays **frozen** where it is. **Follow** (in its contextual controls) makes it
 move to each new press or pause over the page until you freeze it again;
 dragging it, nudging it or choosing **Place…** freezes it. With **Select**
 active, drag the arrow to move it; click it to select it, then use the arrow
@@ -272,7 +301,7 @@ a clipboard success. **Download JSON** remains the editable export.
 
 ### Export preview
 
-**Export preview** (More actions) captures the tab once and composes it exactly
+**Export preview** on the Capture section captures the tab once and composes it exactly
 as an export does, then shows that image with its pixel size, crop, output
 scale, screenshot pixel ratio, legend and pointer, plus warnings: a legend
 clipped by the crop, window edge or a fixed height, a hidden legend whose
@@ -307,15 +336,15 @@ scrolls the page back to it. Marks keep their screen positions — recovery does
 not anchor them to page content — so adjust them if the page moved. Undo history
 is not recovered.
 
-Escape decides later: the draft stays, a notice in the style row and **More
-actions › Restore draft…** keep it reachable, and **nothing new is saved for
+Escape decides later: the draft stays, a notice in the strip and its
+**Restore draft** control keep it reachable, and **nothing new is saved for
 recovery until you restore or discard it**, so the waiting draft is never
 overwritten. Restoring over marks drawn meanwhile asks first. Reopening Redline
 on a still-empty page offers the draft again. Closing Redline dismisses the
 Restore dialog and keeps the waiting draft, just like deciding later.
 
 Clearing every mark removes the stored draft rather than saving an empty one, so
-nothing comes back. **More actions › Discard draft…** deletes the copy of the
+nothing comes back. **Discard draft** on the strip deletes the copy of the
 current session and pauses saving until **Resume reload recovery**. If the
 extension's session storage is full, or a session exceeds 1.5 MB, Redline says
 so and keeps your marks open; the next change retries. Close and reopen still
@@ -330,18 +359,19 @@ overwrite each other's drafts; closing a tab deletes its drafts.
 
 ### Use the page while Redline is open
 
-Click **Browse** or press **F2** to use the webpage normally. The page receives
-clicks, typing, and scrolling; the drawing tools are disabled and the bar shows a
-dashed border with a hollow mode indicator. Click **Annotate** or press **F2**
-again to resume drawing; the filled indicator and pressed **Annotate** button
-show annotation mode.
+Use the compact mode button or press **F2** to switch to Browse mode. The page
+then receives clicks, typing, and scrolling; drawing tools are disabled and the
+bar shows a dashed border. Use the same button or press **F2** again to return to
+Annotate mode. The button's icon and accessible label always describe the mode
+it will enter next.
 
 Switching modes preserves the space occupied by an existing vertical scrollbar,
 so entering Annotate does not widen the page and reset responsive 3D canvases.
 The underlying page stays live; this does not pause its scripts or animations.
 
-**Pin** docks the toolbar at the top-left and highlights while engaged. It works
-in both modes. Click it again to unpin, or drag the grip to undock and move it.
+**Pin** returns the full-width strip to the top and highlights while engaged. It
+works in both modes. Click it again to unpin, then drag the grip to move the
+strip vertically; its horizontal edges remain aligned with the viewport.
 
 Marks, the pointer and the crop are hidden in Browse mode and retained when you return.
 They stay at their screen positions; if scrolling or page layout changes move
@@ -349,8 +379,7 @@ the underlying content, reposition the marks to match.
 
 ### Crop and resize an export
 
-Choose **Crop** (on the bar, or under **More actions** in a narrow window, or
-press **C**), then drag a rectangle around the
+Choose **Crop** in the strip's Capture section (or press **C**), then drag a rectangle around the
 area to include. Drag inside to move it, or use its eight handles to resize it.
 Arrow keys move the crop one screen pixel; hold Shift for ten pixels. Focus a
 handle with Tab to resize it with those keys. **Select all** provides a
@@ -376,6 +405,26 @@ Marks use the session's viewport coordinates over the live page. The drawing
 surface and exported PNG use the same scaling when the window changes size.
 Annotation history is separate from the page's undo history.
 
+### Capture the full page
+
+Choose **Full page** in the strip's **Capture** group beside Crop and Copy image.
+Redline temporarily hides itself, scrolls through the
+document, stitches the visible tiles into one PNG, restores the original scroll
+position, and copies the result. Current annotations are placed at the page
+position occupied by the viewport when capture began.
+
+Full Page preserves at least the screenshot's native pixel dimensions, even if
+the regular crop output is set to 50%; settings above 100% remain an explicit
+upscale. The completion message reports the actual PNG width × height. Image
+viewers often scale a very tall PNG down to fit, which can look soft until it is
+opened or viewed at 100%.
+
+Full-page capture uses the existing active-tab permission and adds no debugger
+or all-sites permission. It is intentionally bounded to 60 screen tiles and a
+64-megapixel PNG. Pages with fixed or sticky chrome, animations, lazy loading or
+infinite scrolling can produce repeated or changing content; visible-area
+capture remains available for those pages.
+
 ## Annotation schema
 
 Exports stay `open-redline` version 1. Every addition is optional and defaults
@@ -389,6 +438,8 @@ marks serialise exactly as before:
 | `fill` | rectangle, ellipse, polygon | fill colour; omitted when it equals `color` |
 | `outline: false` | rectangle, ellipse, polygon | Fill only; ignored unless there is a fill |
 | `savedFill` | rectangle, ellipse, polygon | Optional `{color, opacity}` retained while Outline hides a previously chosen fill; restored when fill is enabled |
+| `text`, `fontSize` | rectangle | optional attached, centred label and its size; both are omitted when the label is empty |
+| `rotation` | rectangle, ellipse, textbox, pen, brush, polyline, polygon | clockwise degrees in [0, 360) about the centre of the mark's upright box (its `start`/`end` box, or the extent of its `points`); geometry stays upright and the rotation is applied when drawing; omitted when 0 |
 | `startDecoration`, `endDecoration` | line, arrow, polyline | `none`, `arrow`, `open-circle` or `filled-circle`; omitted when the type's default |
 | `type: "bullet"` | new type | `point` (finite `x`, `y`), `label` (one character, `1`–`9` or `A`–`Z`), optional `text` (multiline explanation, at most 10,000 characters; omitted when empty), plus the usual `id`, `color`, `width`, `intent` |
 | `document.legend` | document | optional `{visible, x, y, width, height?, fontSize, fontFamily}` in document coordinates; `height` omitted means Fit text; `fontFamily` is `sans-serif`, `serif` or `monospace`; missing geometry defaults from the document size |
@@ -404,6 +455,12 @@ measured before they replace anything. Unknown legend fields are reported like
 unknown mark fields (`legend.title`). Legacy notes keep `number`/`marker` and may
 still use `10` or `AA`. Builds from before this change reject files that contain
 bullets, as they reject ellipses.
+
+A `rotation` that is not a finite number (for example `"45"`) rejects the whole
+import; any other value is normalised into [0, 360). On marks that cannot
+rotate, such as lines and bullets, it is reported as an unsupported field
+(`line.rotation`). Builds from before this change report `rectangle.rotation`
+and similar as unsupported and draw those marks upright.
 
 A malformed `cursor` (for example `visible: "yes"` or a hotspot outside the
 document) rejects the whole import; unknown cursor fields are reported as
@@ -465,15 +522,15 @@ host-dialogs.js       native <dialog> note entry, confirmations and the Restore/
 color-picker.js       plain-element colour control (see "custom elements" below)
 redline/
   RedlineOverlay.js     orchestration: lifecycle, selection, defaults, keyboard, pointer, recovery, export
-  RedlineToolbar.js     main bar, overflow menus, contextual style row
-  RedlineMenu.js        accessible menu button positioned outside the bar
-  RedlineGestures.js    drawing, moving, resizing, erasing, path drafts
-  RedlineTextEditor.js  in-place text box editing
+  RedlineToolbar.js     one full-width strip with commands and contextual controls
+  RedlineGestures.js    drawing, moving, resizing, rotating, erasing, path drafts
+  RedlineTransform.js   selection handles, rotate knob, rotation-aware resize
+  RedlineTextEditor.js  in-place text-box and rectangle-label editing
   RedlineLegend.js      bullet labels, legend validation, layout, caret geometry, drawing
   RedlineLegendEditor.js  live legend canvas and its hidden-input explanation editor
   RedlineDocument.js    validation, import, bounded undo/redo of marks and legend
   RedlineStyles.js      style vocabulary and the single style-edit function
-  RedlineGeometry.js    drawing primitives, bounds, hit testing, constraints
+  RedlineGeometry.js    drawing primitives, rotation, bounds, hit testing, constraints
   RedlineTextLayout.js  shared font, measurement, wrapping and baselines
   RedlineSvg.js         live preview, cached per mark
   RedlineCanvas.js      PNG renderer drawing the same primitives
@@ -646,6 +703,8 @@ node test/phase3-recovery-browser.mjs  # reload recovery lifecycle, tabs, quota,
 node test/phase3-review-browser.mjs   # lead regressions for closing dialogs and recovery failures
 node test/eyedropper-browser.mjs      # real page-pixel samples, DPR, style ownership and cancellation
 node test/mode-layout-browser.mjs     # classic scrollbar layout and camera-reset regressions
+node test/transform-browser.mjs       # selection handles, rotate knob, rotated resize/export/text (DPR 2)
+node test/fullpage-browser.mjs        # menu-free strip and native-resolution full-page alignment
 pwsh -NoProfile -File test/watch-reload.ps1
 node test/screenshots.mjs            # review captures at 1920, 1200, 800 and 420 px
 ```
@@ -719,7 +778,7 @@ window with capture refused from a background tab, when another tab is
 activated mid-capture, when the tab switches away and back mid-capture, and on
 navigation mid-capture (the worker's capture is delayed from the test to make
 these deterministic); a refused preview; 1920, 1200, 800 and 420 px layouts of
-the bar, More actions, Pointer row and preview at both ratios; page-world
+the command strip, Pointer row and preview at both ratios; page-world
 observers, page storage, the stored draft's contents and the shipped manifest.
 Screenshots go to `test-artifacts/phase3`.
 
