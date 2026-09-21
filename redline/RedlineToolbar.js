@@ -17,10 +17,13 @@ import {
   BULLET_SCHEMES, LEGEND_FONT_OPTIONS, LEGEND_FONT_SIZES, LEGEND_WIDTHS,
 } from './RedlineLegend.js';
 import {
-  BULLET_SCHEME_OPTIONS, CLOSED_TYPES, DECORATIONS, DECORATION_LABELS, END_PRESETS, FILL_OPACITIES, FONT_SIZES,
-  HIGHLIGHTER_OPACITIES, HIGHLIGHTER_WIDTHS, LINE_TYPES, LINE_WEIGHTS, NOTE_MARKERS, TEXT_BACKGROUNDS,
-  TREATMENTS, markDecorations, redlineMarkFill, treatmentOf,
+  BULLET_SCHEME_OPTIONS, CLOSED_TYPES, DECORATIONS, DECORATION_LABELS, END_PRESETS, FONT_SIZES,
+  HIGHLIGHTER_WIDTHS, LINE_TYPES, LINE_WEIGHTS, NOTE_MARKERS, TEXT_BACKGROUNDS,
+  TEXT_ALIGNMENTS, VERTICAL_ALIGNMENTS,
+  markDecorations, redlineMarkFill, redlineMarkStroked,
 } from './RedlineStyles.js';
+import { DEFAULT_TEXT_COLOR, FONT_FAMILIES } from './RedlineShapeText.js';
+import { DIRECT_SELECTION_TYPES } from './RedlineTransform.js';
 
 export const TOOL_INFO = {
   select: { label: 'Select', key: 'V', hint: 'select, move and style marks' },
@@ -145,15 +148,6 @@ function endsIcon(start, end) {
   };
   parts.push(cap(5, -1, start), cap(35, 1, end));
   svg.innerHTML = parts.join('');
-  return svg;
-}
-
-function treatmentIcon(treatment) {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.dataset.redlineTreatmentIcon = treatment;
-  svg.innerHTML = '<rect x="4" y="5" width="16" height="14" rx="1.5"/>';
   return svg;
 }
 
@@ -300,23 +294,6 @@ export class RedlineToolbar {
       return node;
     };
 
-    const treatment = group('treatment');
-    treatment.setAttribute('role', 'group');
-    treatment.setAttribute('aria-label', 'Shape treatment');
-    this.treatmentButtons = TREATMENTS.map(([key, text]) => {
-      const element = button({ title: text });
-      element.dataset.treatment = key;
-      element.appendChild(treatmentIcon(key));
-      const span = document.createElement('span');
-      span.dataset.redlineLabel = '';
-      span.textContent = text;
-      element.appendChild(span);
-      element.setAttribute('aria-label', text);
-      element.addEventListener('click', () => this._emit('style', { property: 'treatment', value: key }));
-      treatment.appendChild(element);
-      return element;
-    });
-
     const colorButton = (name, text) => {
       const element = button({ title: text });
       element.dataset.redlineColor = name;
@@ -336,33 +313,8 @@ export class RedlineToolbar {
     group('stroke').appendChild(this.strokeColor.element);
     this.fillColor = colorButton('fill', 'Fill');
     group('fill').appendChild(this.fillColor.element);
-
-    const opacity = group('fillOpacity');
-    opacity.setAttribute('role', 'group');
-    opacity.setAttribute('aria-label', 'Fill opacity');
-    const opacityCaption = document.createElement('span');
-    opacityCaption.dataset.redlineCaption = '';
-    opacityCaption.textContent = 'Fill opacity';
-    opacity.appendChild(opacityCaption);
-    this.opacityButtons = [...FILL_OPACITIES, 'custom'].map(value => {
-      const element = button({ title: value === 'custom' ? 'Imported fill opacity' : `${percent(value)} fill` });
-      element.dataset.fillOpacity = String(value);
-      const swatch = document.createElement('span');
-      swatch.dataset.redlineOpacitySwatch = '';
-      swatch.setAttribute('aria-hidden', 'true');
-      const paint = document.createElement('span');
-      if (value !== 'custom') paint.style.opacity = String(value);
-      swatch.appendChild(paint);
-      const caption = document.createElement('span');
-      caption.textContent = value === 'custom' ? '' : percent(value);
-      element.append(swatch, caption);
-      element.setAttribute('aria-label', value === 'custom' ? 'Imported fill opacity' : `${percent(value)} fill opacity`);
-      if (value !== 'custom') {
-        element.addEventListener('click', () => this._emit('style', { property: 'fillOpacity', value }));
-      }
-      opacity.appendChild(element);
-      return element;
-    });
+    this.textColor = colorButton('text', 'Text');
+    group('textColor').appendChild(this.textColor.element);
 
     const widthField = select('Thickness', LINE_WEIGHTS, { title: 'Line thickness in points' });
     widthField.control.setAttribute('aria-label', 'Line weight');
@@ -375,12 +327,6 @@ export class RedlineToolbar {
     group('brushWidth').appendChild(brushWidth.wrapper);
     this.brushWidthSelect = brushWidth.control;
     this.brushWidthSelect.addEventListener('change', () => this._emit('style', { property: 'width', value: Number(this.brushWidthSelect.value) }));
-
-    const brushOpacity = select('Opacity', HIGHLIGHTER_OPACITIES, { title: 'Highlighter opacity' });
-    brushOpacity.control.setAttribute('aria-label', 'Highlighter opacity');
-    group('brushOpacity').appendChild(brushOpacity.wrapper);
-    this.brushOpacitySelect = brushOpacity.control;
-    this.brushOpacitySelect.addEventListener('change', () => this._emit('style', { property: 'opacity', value: Number(this.brushOpacitySelect.value) }));
 
     const ends = group('ends');
     ends.setAttribute('role', 'group');
@@ -448,7 +394,9 @@ export class RedlineToolbar {
     this.legendToggle.addEventListener('click', () => this._emit('legend', {
       property: 'visible', value: this.legendToggle.getAttribute('aria-pressed') !== 'true',
     }));
-    this.legendOptions = button({ title: 'Legend font, size and position', text: 'Legend options' });
+    this.legendOptions = button({
+      label: 'Legend options', title: 'Legend font, size and position', icon: 'tools', text: 'Legend options',
+    });
     this.legendOptions.dataset.redlineLegendOptions = '';
     this.legendOptions.addEventListener('click', () => this._emit('legendSelect'));
     legendToggle.append(this.legendToggle, this.legendOptions);
@@ -505,6 +453,40 @@ export class RedlineToolbar {
     this.fontSizeSelect = fontSize.control;
     this.fontSizeSelect.addEventListener('change', () => this._emit('style', { property: 'fontSize', value: Number(this.fontSizeSelect.value) }));
 
+    const fontFamily = select('Font', FONT_FAMILIES);
+    group('fontFamily').appendChild(fontFamily.wrapper);
+    this.fontFamilySelect = fontFamily.control;
+    this.fontFamilySelect.addEventListener('change', () => this._emit('style', { property: 'fontFamily', value: this.fontFamilySelect.value }));
+
+    const textFormat = group('textFormat');
+    textFormat.setAttribute('role', 'group');
+    textFormat.setAttribute('aria-label', 'Text emphasis');
+    const formatButton = (property, label, title) => {
+      const element = button({ label: title, title, text: label });
+      element.dataset.redlineTextFormat = property;
+      element.setAttribute('aria-pressed', 'false');
+      // Keep the native text selection and input focus while formatting it.
+      element.addEventListener('pointerdown', event => event.preventDefault());
+      element.addEventListener('click', () => this._emit('style', {
+        property, value: element.getAttribute('aria-pressed') !== 'true',
+      }));
+      textFormat.appendChild(element);
+      return element;
+    };
+    this.boldButton = formatButton('bold', 'B', 'Bold (Ctrl+B)');
+    this.italicButton = formatButton('italic', 'I', 'Italic (Ctrl+I)');
+    this.underlineButton = formatButton('underline', 'U', 'Underline (Ctrl+U)');
+
+    const alignment = select('Align', TEXT_ALIGNMENTS, { title: 'Horizontal text alignment' });
+    group('textAlign').appendChild(alignment.wrapper);
+    this.textAlignSelect = alignment.control;
+    this.textAlignSelect.addEventListener('change', () => this._emit('style', { property: 'textAlign', value: this.textAlignSelect.value }));
+
+    const vertical = select('Vertical', VERTICAL_ALIGNMENTS, { title: 'Vertical text alignment inside the shape' });
+    group('verticalAlign').appendChild(vertical.wrapper);
+    this.verticalAlignSelect = vertical.control;
+    this.verticalAlignSelect.addEventListener('change', () => this._emit('style', { property: 'verticalAlign', value: this.verticalAlignSelect.value }));
+
     const background = select('Background', TEXT_BACKGROUNDS, { title: 'Text box background opacity' });
     background.control.setAttribute('aria-label', 'Text box background');
     group('background').appendChild(background.wrapper);
@@ -514,6 +496,14 @@ export class RedlineToolbar {
     this.hint = document.createElement('span');
     this.hint.dataset.redlineHint = '';
     context.appendChild(this.hint);
+
+    const selectionMode = group('selectionMode');
+    this.selectionModeButton = button({ title: 'Switch between object and direct point selection (V)', text: 'Edit points' });
+    this.selectionModeButton.dataset.redlineSelectionMode = '';
+    this.selectionModeButton.setAttribute('aria-pressed', 'false');
+    this.selectionModeButton.addEventListener('click', () => this._emit('selectionMode',
+      this.selectionModeButton.getAttribute('aria-pressed') === 'true' ? 'object' : 'direct'));
+    selectionMode.appendChild(this.selectionModeButton);
 
     const selection = group('selection');
     this.duplicateButton = button({ label: 'Duplicate (Ctrl+D)', title: 'Duplicate the selected mark (Ctrl+D)', icon: 'duplicate', action: 'duplicate', text: 'Duplicate' });
@@ -687,6 +677,7 @@ export class RedlineToolbar {
       this.context.setAttribute('aria-label', `Style of the selected ${singular}`);
       this.context.dataset.target = 'selection';
       show.add('selection');
+      if (DIRECT_SELECTION_TYPES.has(type)) show.add('selectionMode');
     } else if (subject.kind === 'legend') {
       this.targetLabel.textContent = 'Legend';
       this.context.setAttribute('aria-label', 'Legend layout');
@@ -700,7 +691,7 @@ export class RedlineToolbar {
       this.context.setAttribute('aria-label', `Editing the explanation for bullet ${subject.label}`);
       this.context.dataset.target = 'selection';
     } else if (subject.kind === 'defaults') {
-      this.targetLabel.textContent = `New ${plural}`;
+      this.targetLabel.textContent = 'Defaults:';
       this.context.setAttribute('aria-label', `Style for new ${plural}`);
       this.context.dataset.target = 'defaults';
     } else {
@@ -709,7 +700,9 @@ export class RedlineToolbar {
       this.context.dataset.target = 'none';
     }
     this.hint.textContent = subject.hint ?? '';
-    this.hint.hidden = !subject.hint;
+    // The exhaustion decision replaces the ordinary hint. Keeping both in the
+    // narrow context lane lets the hint paint over the decision button.
+    this.hint.hidden = !subject.hint || Boolean(subject.limit);
 
     if (subject.kind === 'cursor') {
       show.add('cursor');
@@ -727,72 +720,74 @@ export class RedlineToolbar {
       if (subject.kind === 'explanation') show.add('explanationActions');
     } else if (subject.kind !== 'none') {
       const closed = CLOSED_TYPES.has(type);
-      const treatment = closed ? treatmentOf(style) : 'outline';
+      const stroked = !closed || redlineMarkStroked(style);
       if (closed) {
-        show.add('treatment').add('stroke').add('fill').add('fillOpacity').add('width');
-        if (type === 'rectangle' && style.text) show.add('fontSize');
-        this.treatmentButtons.forEach(element => {
-          const pressed = element.dataset.treatment === treatment;
-          element.setAttribute('aria-pressed', String(pressed));
-          element.toggleAttribute('data-active', pressed);
-        });
+        show.add('stroke').add('fill').add('width');
+        show.add('textColor').add('fontSize').add('fontFamily').add('textFormat').add('textAlign').add('verticalAlign');
       } else if (type === 'brush') {
-        show.add('stroke').add('brushWidth').add('brushOpacity');
+        show.add('stroke').add('brushWidth');
       } else if (type === 'textbox') {
-        show.add('stroke').add('fontSize').add('background');
+        show.add('stroke').add('textColor').add('fontSize').add('fontFamily').add('textFormat')
+          .add('textAlign').add('verticalAlign').add('background');
       } else if (type === 'note') {
         show.add('stroke');
         if (subject.kind === 'defaults') show.add('noteMarker');
       } else if (type === 'bullet') {
-        show.add('stroke').add('legendToggle');
-        if (subject.kind === 'defaults') {
-          show.add('bulletScheme').add('bulletNext');
-          if (subject.limit) show.add('bulletLimit');
+        if (subject.kind === 'defaults' && subject.limit) {
+          // Exhaustion is an immediate decision, so it temporarily replaces
+          // ordinary bullet styling instead of being stranded to the right of
+          // an invisible horizontal scroll position.
+          show.add('bulletLimit');
         } else {
-          show.add('explain');
+          show.add('stroke').add('legendToggle');
+        }
+        if (subject.kind === 'defaults' && !subject.limit) {
+          show.add('bulletScheme').add('bulletNext');
+        } else {
+          if (subject.kind !== 'defaults') show.add('explain');
         }
       } else {
         show.add('stroke').add('width');
         if (LINE_TYPES.has(type)) show.add('ends');
       }
 
-      this._paintColorButton(this.strokeColor, style.color, 1, closed ? 'Outline' : type === 'textbox' ? 'Border' : 'Color');
-      this.strokeColor.element.disabled = this.strokeColor.element.disabled || treatment === 'fill';
+      const strokeOpacity = style.opacity ?? (type === 'brush' ? 0.35 : 1);
+      this._paintColorButton(this.strokeColor, style.color, strokeOpacity,
+        closed ? 'Outline' : type === 'textbox' ? 'Border' : 'Color', stroked);
       const fill = redlineMarkFill(style);
-      this._paintColorButton(this.fillColor, fill?.color ?? style.fill ?? style.color, fill?.opacity ?? 1, 'Fill');
-      this.fillColor.element.disabled = this.fillColor.element.disabled || treatment === 'outline';
+      this._paintColorButton(this.fillColor, fill?.color ?? style.savedFill?.color ?? style.fill ?? style.color,
+        fill?.opacity ?? style.savedFill?.opacity ?? 1, 'Fill', Boolean(fill));
       const describe = subject.kind === 'selection' ? `the selected ${singular}` : `new ${plural}`;
       const strokeRole = this.strokeColor.caption.textContent === 'Color' ? 'Color' : `${this.strokeColor.caption.textContent} color`;
-      this.strokeColor.element.title = `${strokeRole} for ${describe}: ${style.color}`;
-      this.fillColor.element.title = `Fill color for ${describe}${fill ? `: ${fill.color}` : ''}`;
-      this.strokeColor.element.setAttribute('aria-label', `${strokeRole}, ${style.color}`);
-      this.fillColor.element.setAttribute('aria-label', `Fill color${fill ? `, ${fill.color}` : ''}`);
+      const strokeDescription = closed && !stroked ? 'No outline' : `${style.color}, ${percent(strokeOpacity)} opacity`;
+      const fillDescription = fill ? `${fill.color}, ${percent(fill.opacity)} opacity` : 'No fill';
+      this.strokeColor.element.title = `${strokeRole} for ${describe}: ${strokeDescription}`;
+      this.fillColor.element.title = `Fill for ${describe}: ${fillDescription}`;
+      this.strokeColor.element.setAttribute('aria-label', `${strokeRole}, ${strokeDescription}`);
+      this.fillColor.element.setAttribute('aria-label', `Fill, ${fillDescription}`);
 
-      const fillOpacity = fill?.opacity ?? 0;
-      const standard = FILL_OPACITIES.includes(fillOpacity);
-      this.opacityButtons.forEach(element => {
-        const value = element.dataset.fillOpacity;
-        const custom = value === 'custom';
-        const pressed = custom ? fillOpacity > 0 && !standard : Number(value) === fillOpacity;
-        element.hidden = custom && (fillOpacity === 0 || standard);
-        if (custom && !element.hidden) {
-          element.lastElementChild.textContent = percent(fillOpacity);
-          element.querySelector('[data-redline-opacity-swatch] > span').style.opacity = String(fillOpacity);
+      if (closed || type === 'textbox') {
+        const textColor = style.textColor ?? DEFAULT_TEXT_COLOR;
+        this._paintColorButton(this.textColor, textColor, 1, 'Text', true);
+        this.textColor.element.title = `Text color for ${describe}: ${textColor}`;
+        this.textColor.element.setAttribute('aria-label', `Text color, ${textColor}`);
+        setSelectValue(this.fontFamilySelect, style.fontFamily ?? FONT_FAMILIES[0][1], value => value);
+        this.textAlignSelect.value = style.textAlign ?? (type === 'textbox' ? 'left' : 'center');
+        this.verticalAlignSelect.value = style.verticalAlign ?? (type === 'textbox' ? 'top' : 'middle');
+        for (const [element, property] of [[this.boldButton, 'bold'], [this.italicButton, 'italic'], [this.underlineButton, 'underline']]) {
+          const pressed = Boolean(style[property] ?? (property === 'bold' && type === 'rectangle'));
+          element.setAttribute('aria-pressed', String(pressed));
+          element.toggleAttribute('data-active', pressed);
         }
-        element.setAttribute('aria-pressed', String(pressed));
-        element.toggleAttribute('data-active', pressed);
-        element.disabled = element.disabled || treatment === 'outline';
-        element.querySelector('[data-redline-opacity-swatch] > span').style.backgroundColor = fill?.color ?? style.fill ?? style.color ?? '#000000';
-      });
+      }
 
       if (type === 'brush') {
         setSelectValue(this.brushWidthSelect, style.width, value => `${Math.round(Math.max(value * 4, 6))} px`);
-        setSelectValue(this.brushOpacitySelect, style.opacity ?? 0.35, percent);
       } else if (style.width !== undefined) {
         setSelectValue(this.widthSelect, style.width, value => `${Math.round(value * 100) / 100} px`);
       }
-      this.widthSelect.disabled = this.widthSelect.disabled || treatment === 'fill';
-      if (type === 'textbox' || (type === 'rectangle' && style.text)) {
+      this.widthSelect.disabled = this.widthSelect.disabled || (closed && !stroked);
+      if (type === 'textbox' || closed) {
         setSelectValue(this.fontSizeSelect, style.fontSize ?? 16, value => `${value} px`);
       }
       if (type === 'textbox') {
@@ -812,14 +807,39 @@ export class RedlineToolbar {
       if (subject.noteMarker) this.noteMarkerSelect.value = subject.noteMarker;
     }
     this._syncBulletControls(subject, show);
+    if (show.has('selectionMode')) {
+      const direct = state.selectionMode === 'direct';
+      this.selectionModeButton.setAttribute('aria-pressed', String(direct));
+      this.selectionModeButton.toggleAttribute('data-active', direct);
+      this.selectionModeButton.querySelector('[data-redline-label]').textContent = direct ? 'Object mode' : 'Edit points';
+      this.selectionModeButton.title = direct
+        ? 'Return to object selection with resize, move, and rotate handles (V)'
+        : 'Edit individual path vertices (V)';
+    }
     const pending = state.recovery?.pending;
     if (pending) {
+      // A waiting draft is a blocking choice, not another style property.
+      // Give it the contextual lane so Restore and Discard cannot sit beyond
+      // the invisible edge of a long shape-formatting row.
+      show.clear();
       show.add('recovery');
+      this.hint.hidden = true;
       this.recoveryText.textContent = `Draft from ${pending.savedTime} (${pending.markCount} mark${pending.markCount === 1 ? '' : 's'}) is waiting`
         + ' — new marks are not saved for recovery until you choose';
     }
 
     for (const [name, node] of Object.entries(this.controls)) node.hidden = !show.has(name);
+    // Reset only when the subject changes. Style edits re-render the same
+    // subject; preserving its scroll position lets a user operate adjacent
+    // controls without the row jumping back to its beginning after each edit.
+    const contextKey = [
+      subject.kind, type, style.id ?? '', subject.label ?? '', Boolean(subject.placing),
+      Boolean(subject.limit), Boolean(pending),
+    ].join(':');
+    if (contextKey !== this._contextKey) {
+      this.context.scrollLeft = 0;
+      this._contextKey = contextKey;
+    }
     this.duplicateButton.disabled = this.duplicateButton.disabled || !state.hasSelection;
     this.deleteButton.disabled = this.deleteButton.disabled || !state.hasSelection;
     this.positionContext();
@@ -858,9 +878,10 @@ export class RedlineToolbar {
     }
   }
 
-  _paintColorButton(control, color, opacity, caption) {
+  _paintColorButton(control, color, opacity, caption, painted = true) {
     control.caption.textContent = caption;
     control.paint.style.backgroundColor = color ?? 'transparent';
-    control.paint.style.opacity = String(opacity);
+    control.paint.style.opacity = painted ? String(opacity) : '0';
+    control.swatch.toggleAttribute('data-no-paint', !painted);
   }
 }

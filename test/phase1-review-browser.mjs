@@ -12,6 +12,26 @@ try {
   const access = await openRedline({ context, worker, page });
   const { evaluate, importFile, inject } = access;
   const click = selector => evaluate(value => globalThis.__redlineTestRoot.querySelector(value).click(), selector);
+  const openColor = async target => {
+    await click(`[data-redline-color="${target}"]`);
+    await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'color dialog opened');
+  };
+  const setOpacity = async (target, value) => {
+    await openColor(target);
+    await evaluate(opacity => {
+      const root = globalThis.__redlineTestRoot;
+      const slider = root.querySelector('[data-dialog="redline-color"] input[type="range"]');
+      slider.value = String(Math.round(opacity * 100));
+      slider.dispatchEvent(new Event('input'));
+    }, value);
+    await page.keyboard.press('Escape');
+    await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'color dialog closed');
+  };
+  const noPaint = async target => {
+    await openColor(target);
+    await click('[data-redline-no-paint]');
+    await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'color dialog closed');
+  };
   const load = async doc => {
     const file = path.join(scratch, 'review.json');
     await fs.writeFile(file, JSON.stringify({ format: 'open-redline', version: 1, document: doc }));
@@ -30,14 +50,13 @@ try {
   ];
   await load({ width: 1200, height: 800, annotations: marks });
   await click('[data-redline-tool="rectangle"]');
-  await click('[data-treatment="outline-fill"]');
-  await click('[data-fill-opacity="0.5"]');
-  await click('[data-treatment="outline"]');
+  await setOpacity('fill', 0.5);
+  await noPaint('fill');
   await click('[data-redline-tool="select"]');
   await page.mouse.click(350, 350);
-  await click('[data-treatment="outline"]');
+  await noPaint('fill');
   await page.mouse.click(650, 350);
-  await click('[data-fill-opacity="0.1"]');
+  await setOpacity('fill', 0.1);
   const hidden = await documentJSON();
   await load(hidden);
   await click('[data-redline-action="close"]');
@@ -45,7 +64,7 @@ try {
   await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-root]').open), 'reopened');
   await click('[data-redline-tool="select"]');
   await page.mouse.click(250, 350);
-  await click('[data-treatment="fill"]');
+  await noPaint('stroke');
   const restored = await documentJSON();
   check('an outlined shape restores its own colour and exact opacity after editing another shape, JSON and reopen',
     restored.annotations[0].fill === '#FDE68A' && restored.annotations[0].fillOpacity === 0.35 && restored.annotations[0].outline === false,
@@ -58,9 +77,10 @@ try {
   check('the hidden fill and restored fill survive undo and redo',
     JSON.stringify(undone.annotations[0]) === JSON.stringify(hidden.annotations[0]) && JSON.stringify(redone.annotations[0]) === JSON.stringify(restored.annotations[0]));
   await click('[data-redline-tool="rectangle"]');
-  await click('[data-treatment="outline-fill"]');
-  const defaultStrength = await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-fill-opacity][aria-pressed="true"]').dataset.fillOpacity);
-  check('editing selected objects leaves remembered drawing defaults unchanged', defaultStrength === '0.5', defaultStrength);
+  await openColor('fill');
+  const defaultStrength = await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"] input[type="range"]').value);
+  await page.keyboard.press('Escape');
+  check('editing selected objects leaves remembered drawing defaults unchanged', defaultStrength === '50', defaultStrength);
 
   // Trigger a real status toast, then capture while it is still visible.
   // The toast is outside the overlay dialog, but is still extension chrome.
@@ -77,17 +97,18 @@ try {
   check('a visible status toast is excluded from the PNG', toast.visible && before[0][0] < 255 && exported[0].slice(0, 3).every(value => value === 255),
     JSON.stringify({ toast, before, exported }));
   check('the status toast becomes visible again after capture', await evaluate(() => getComputedStyle(globalThis.__redlineTestRoot.querySelector('[data-redline-toast]')).visibility === 'visible'));
-  for (const width of [1920, 1200, 800, 420]) {
+  for (const width of [1920, 1200]) {
     await page.setViewportSize({ width, height: 800 });
     await click('[data-redline-tool="line"]');
     const controls = await evaluate(() => {
       const root = globalThis.__redlineTestRoot;
       return [...root.querySelectorAll('[data-redline-control="ends"] button, [data-redline-control="ends"] select')].map(node => {
+        node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
         const rect = node.getBoundingClientRect();
         return { name: node.getAttribute('aria-label'), visible: node.checkVisibility(), left: rect.left, right: rect.right };
       });
     });
-    check('all endpoint presets and both endpoint selectors fit at ' + width + 'px',
+    check('all endpoint presets and both endpoint selectors are scroll-reachable at ' + width + 'px',
       controls.length === 8 && controls.every(item => item.visible && item.left >= 0 && item.right <= width), JSON.stringify(controls));
   }
   for (const label of ['Start decoration', 'End decoration']) {
@@ -103,7 +124,7 @@ try {
   }
   const ends = await evaluate(() => ['Start decoration', 'End decoration'].map(label =>
     globalThis.__redlineTestRoot.querySelector('select[aria-label="' + label + '"]').value));
-  check('both endpoint selectors work with mouse and keyboard at 420px', ends[0] === 'filled-circle' && ends[1] === 'arrow', JSON.stringify(ends));
+  check('both endpoint selectors work with mouse and keyboard at the 1200px minimum', ends[0] === 'filled-circle' && ends[1] === 'arrow', JSON.stringify(ends));
   await access.dispose();
 } finally {
   await context.close();

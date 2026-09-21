@@ -9,6 +9,7 @@ import { cursorPrimitives } from './RedlineCursor.js';
 import { markPrimitives } from './RedlineGeometry.js';
 import { drawLegend, layoutLegend } from './RedlineLegend.js';
 import { createApproximateMeasurer, fontString } from './RedlineTextLayout.js';
+import { fontForTextStyle } from './RedlineShapeText.js';
 
 export {
   redlineMarkFill, redlineMarkStroked, redlineNoteGlyph, redlineTextBoxFill,
@@ -81,7 +82,23 @@ export function drawPrimitive(ctx, primitive) {
     ctx.textAlign = primitive.anchor === 'middle' ? 'center' : 'left';
     ctx.textBaseline = 'alphabetic';
     for (const line of primitive.lines) {
-      if (line.text) ctx.fillText(line.text, line.x, line.y);
+      if (line.runs?.length) {
+        for (const run of line.runs) {
+          ctx.font = fontForTextStyle(run.style);
+          ctx.fillStyle = run.style.color;
+          if (run.text) ctx.fillText(run.text, run.x, run.y);
+          if (run.style.underline && run.width > 0) {
+            ctx.beginPath();
+            ctx.strokeStyle = run.style.color;
+            ctx.lineWidth = Math.max(1, run.style.size / 16);
+            ctx.moveTo(run.x, run.y + Math.max(1, run.style.size * 0.08));
+            ctx.lineTo(run.x + run.width, run.y + Math.max(1, run.style.size * 0.08));
+            ctx.stroke();
+          }
+        }
+      } else if (line.text) {
+        ctx.fillText(line.text, line.x, line.y);
+      }
     }
     ctx.restore();
   }

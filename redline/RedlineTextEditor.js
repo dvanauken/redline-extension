@@ -1,33 +1,47 @@
 /**
- * In-place editor for text boxes and labels attached to rectangles.
+ * In-place rich-text editor for text boxes and closed shapes.
  *
- * A textarea over the box handles typing, IME and the clipboard. It uses the
- * shared font, padding and line height, so committed text reads the way it did
- * while typing; rectangle labels keep their rectangle's existing geometry.
- *
- * Keys: Ctrl/Cmd+Enter saves, Escape cancels the edit without closing Redline,
- * and moving focus away saves.
- *
- * A rotated text box is edited in place, turned with it. As it grows, its
- * upright top-left corner stays where it is on the page.
+ * A native textarea remains the input/IME/clipboard/assistive-technology
+ * endpoint, but the shared shape layout paints the visible text, selection and
+ * caret. That lets a real selection range flow through a polygon or ellipse
+ * instead of being constrained to the textarea's rectangle.
  */
 
 import {
-  RECTANGLE_LABEL_PADDING, REDLINE_FONT_FAMILY, TEXTBOX_LINE_HEIGHT, TEXTBOX_PADDING,
-  fitTextBoxContent, layoutRectangleLabel,
-} from './RedlineTextLayout.js';
-import { rectangleLabelColor, redlineTextBoxFill } from './RedlineStyles.js';
+  TEXT_CONTAINER_TYPES, applyTextRangeStyle, baseTextStyle, layoutShapeText, remapTextRuns,
+  textIndexAtPoint, textStyleAt,
+} from './RedlineShapeText.js';
+import { fitTextBoxContent } from './RedlineTextLayout.js';
 import { boxCenter, boxFromPoints, markRotation, rotatePoint } from './RedlineGeometry.js';
 import { keepCornerInPlace } from './RedlineTransform.js';
 
+const FORMAT_FIELDS = {
+  bold: 'bold', italic: 'italic', underline: 'underline', textColor: 'textColor',
+  fontFamily: 'fontFamily', fontSize: 'fontSize',
+};
+
+function runStyleFields(style, mark) {
+  const base = baseTextStyle({ ...mark, textRuns: [] });
+  return {
+    ...(style.bold !== base.bold ? { bold: style.bold } : {}),
+    ...(style.italic !== base.italic ? { italic: style.italic } : {}),
+    ...(style.underline !== base.underline ? { underline: style.underline } : {}),
+    ...(style.color !== base.color ? { textColor: style.color } : {}),
+    ...(style.family !== base.family ? { fontFamily: style.family } : {}),
+    ...(style.size !== base.size ? { fontSize: style.size } : {}),
+  };
+}
+
 export class RedlineTextEditor {
-  constructor({ root, svg, measurer, getDocument, onFinish, onInput = () => {} }) {
+  constructor({ root, svg, measurer, getDocument, onFinish, onInput = () => {}, onChange = () => {}, keepsEditing = () => false }) {
     this.root = root;
     this.svg = svg;
     this.measurer = measurer;
     this.getDocument = getDocument;
     this.onFinish = onFinish;
     this.onInput = onInput;
+    this.onChange = onChange;
+    this.keepsEditing = keepsEditing;
     this.session = null;
   }
 
@@ -35,19 +49,24 @@ export class RedlineTextEditor {
   get mark() { return this.session?.preview ?? this.session?.mark ?? null; }
   get creating() { return Boolean(this.session?.creating); }
   get element() { return this.session?.element ?? null; }
+  get selectionStart() { return this.session?.element.selectionStart ?? 0; }
+  get selectionEnd() { return this.session?.element.selectionEnd ?? 0; }
 
   contains(node) {
     return Boolean(this.session && (this.session.element === node || this.session.controls.contains(node)));
   }
 
+  owns(node) { return this.contains(node); }
+
   start(mark, { creating = false, initialText = null } = {}) {
-    const rectangleLabel = mark.type === 'rectangle';
+    if (!TEXT_CONTAINER_TYPES.has(mark?.type)) return false;
     const editor = document.createElement('textarea');
     editor.dataset.redlineTextEditor = '';
-    if (rectangleLabel) editor.dataset.redlineRectangleLabelEditor = '';
-    editor.setAttribute('aria-label', rectangleLabel ? 'Rectangle label' : 'Text box content');
-    editor.setAttribute('placeholder', rectangleLabel ? 'Type a label' : 'Type here');
+    editor.dataset.redlineShapeTextEditor = mark.type;
+    if (mark.type === 'rectangle') editor.dataset.redlineRectangleLabelEditor = '';
+    editor.setAttribute('aria-label', mark.type === 'textbox' ? 'Text box content' : `${mark.type} text`);
     editor.spellcheck = true;
+    editor.autocapitalize = 'sentences';
     editor.value = initialText ?? mark.text ?? '';
 
     const controls = document.createElement('div');
@@ -67,7 +86,12 @@ export class RedlineTextEditor {
     controls.append(save, cancel);
     controls.addEventListener('pointerdown', event => event.preventDefault());
 
-    this.session = { element: editor, controls, mark, creating, rectangleLabel };
+    const preview = initialText === null ? { ...mark } : remapTextRuns(mark, editor.value, runStyleFields(baseTextStyle(mark)));
+    this.session = {
+      element: editor, controls, mark, preview, creating,
+      typingStyle: runStyleFields(textStyleAt(preview, Math.max(0, editor.value.length - 1)), preview),
+      pointerAnchor: null,
+    };
     this.root.append(editor, controls);
     this.position();
 
@@ -80,106 +104,210 @@ export class RedlineTextEditor {
         event.preventDefault();
         event.stopPropagation();
         this.finish({ commit: true, restoreFocus: true });
+      } else if ((event.ctrlKey || event.metaKey) && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
+        event.preventDefault();
+        event.stopPropagation();
+        const property = { b: 'bold', i: 'italic', u: 'underline' }[event.key.toLowerCase()];
+        const current = this.currentStyle();
+        this.applyFormat(property, !current[property]);
       }
     });
     editor.addEventListener('input', () => {
+      const session = this.session;
+      if (!session) return;
+      session.preview = remapTextRuns(session.preview, editor.value, session.typingStyle);
+      this._fitPreview();
       this.position();
       this.onInput();
+      this.onChange();
+    });
+    for (const type of ['select', 'keyup', 'click']) editor.addEventListener(type, () => {
+      this._syncTypingStyle();
+      this.position();
+      this.onChange();
     });
     editor.addEventListener('blur', () => {
       queueMicrotask(() => {
-        if (this.session?.element === editor) this.finish({ commit: true });
+        if (this.session?.element === editor && !this.keepsEditing()
+          && !this.root.getRootNode().activeElement?.closest?.('[data-redline-context]')) {
+          this.finish({ commit: true });
+        }
       });
     });
     save.addEventListener('click', () => this.finish({ commit: true, restoreFocus: true }));
     cancel.addEventListener('click', () => this.finish({ commit: false, restoreFocus: true }));
     editor.focus({ preventScroll: true });
     editor.setSelectionRange(editor.value.length, editor.value.length);
+    this._syncTypingStyle();
+    this.position();
+    this.onChange();
+    return true;
+  }
+
+  _fitPreview() {
+    const session = this.session;
+    const doc = this.getDocument();
+    if (!session || !doc || session.preview.type !== 'textbox') return;
+    const original = boxFromPoints(session.mark.start, session.mark.end);
+    // Refit from the session's original upright box on every keystroke. Using
+    // the already translated rotated preview as the next input compounds its
+    // anchoring translation and makes the corner walk across the page.
+    const upright = { ...session.preview, start: session.mark.start, end: session.mark.end };
+    session.preview = keepCornerInPlace(session.mark, fitTextBoxContent(upright, this.measurer, {
+      maxWidth: Math.min(600, doc.width - original.x),
+    }));
+  }
+
+  _localPoint(point) {
+    const mark = this.mark;
+    if (!mark) return point;
+    const rotation = markRotation(mark);
+    if (!rotation) return point;
+    const box = mark.type === 'polygon'
+      ? (() => {
+        const xs = mark.points.map(item => item.x);
+        const ys = mark.points.map(item => item.y);
+        return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+      })()
+      : boxFromPoints(mark.start, mark.end);
+    return rotatePoint(point, boxCenter(box), -rotation);
+  }
+
+  indexAtPoint(point) {
+    const mark = this.mark;
+    if (!mark) return 0;
+    return textIndexAtPoint(layoutShapeText(mark, this.measurer), mark, this._localPoint(point), this.measurer);
+  }
+
+  pointerDown(point, { shiftKey = false } = {}) {
+    const session = this.session;
+    if (!session) return false;
+    const index = this.indexAtPoint(point);
+    const anchor = shiftKey ? session.element.selectionStart : index;
+    session.pointerAnchor = anchor;
+    session.element.setSelectionRange(Math.min(anchor, index), Math.max(anchor, index));
+    session.element.focus({ preventScroll: true });
+    this._syncTypingStyle();
+    this.onChange();
+    return true;
+  }
+
+  pointerDrag(point) {
+    const session = this.session;
+    if (!session || session.pointerAnchor === null) return false;
+    const index = this.indexAtPoint(point);
+    session.element.setSelectionRange(Math.min(session.pointerAnchor, index), Math.max(session.pointerAnchor, index),
+      index < session.pointerAnchor ? 'backward' : 'forward');
+    this._syncTypingStyle();
+    this.onChange();
+    return true;
+  }
+
+  pointerUp() {
+    if (!this.session) return false;
+    this.session.pointerAnchor = null;
+    return true;
+  }
+
+  _syncTypingStyle() {
+    const session = this.session;
+    if (!session) return;
+    const index = Math.max(0, Math.min(session.preview.text.length - 1,
+      session.element.selectionStart > 0 ? session.element.selectionStart - 1 : session.element.selectionStart));
+    session.typingStyle = runStyleFields(textStyleAt(session.preview, index), session.preview);
+  }
+
+  /** Formatting state at the caret or start of the selected range. */
+  currentStyle() {
+    if (!this.session) return null;
+    const index = Math.max(0, Math.min(this.mark.text.length - 1, this.selectionStart));
+    const style = textStyleAt(this.mark, index);
+    const current = {
+      bold: style.bold, italic: style.italic, underline: style.underline,
+      textColor: style.color, fontFamily: style.family, fontSize: style.size,
+      textAlign: this.mark.textAlign ?? (this.mark.type === 'textbox' ? 'left' : 'center'),
+      verticalAlign: this.mark.verticalAlign ?? (this.mark.type === 'textbox' ? 'top' : 'middle'),
+    };
+    if (this.selectionStart === this.selectionEnd) Object.assign(current, this.session.typingStyle);
+    return current;
+  }
+
+  applyFormat(property, value) {
+    const session = this.session;
+    if (!session) return false;
+    if (property === 'textAlign' || property === 'verticalAlign') {
+      session.preview = { ...session.preview, [property]: value };
+    } else if (FORMAT_FIELDS[property]) {
+      if (this.selectionStart !== this.selectionEnd) {
+        session.preview = applyTextRangeStyle(session.preview, property, value, this.selectionStart, this.selectionEnd);
+      } else {
+        session.typingStyle = { ...session.typingStyle, [FORMAT_FIELDS[property]]: value };
+      }
+    } else {
+      return false;
+    }
+    this.position();
+    this.onInput();
+    this.onChange();
+    session.element.focus({ preventScroll: true });
+    return true;
   }
 
   position() {
     const session = this.session;
     const doc = this.getDocument();
     if (!session || !doc || !this.svg.isConnected) return;
-    const original = boxFromPoints(session.mark.start, session.mark.end);
-    let rectangleLayout = null;
-    if (session.rectangleLabel) {
-      session.preview = { ...session.mark, text: session.element.value };
-      rectangleLayout = layoutRectangleLabel(session.preview, this.measurer);
-    } else {
-      session.preview = keepCornerInPlace(session.mark, fitTextBoxContent({ ...session.mark, text: session.element.value }, this.measurer, {
-        maxWidth: Math.min(600, doc.width - original.x),
-      }));
-    }
-    const box = boxFromPoints(session.preview.start, session.preview.end);
+    const layout = layoutShapeText(session.preview, this.measurer);
+    const index = session.element.selectionEnd;
+    const line = layout.lines.find(item => index >= item.start && index <= item.end) ?? layout.lines.at(-1);
+    const anchor = line ? { x: line.x, y: line.top, height: line.height } : { x: layout.box.x, y: layout.box.y, height: 20 };
     const rotation = markRotation(session.preview);
-    const corner = rotatePoint({ x: box.x, y: box.y }, boxCenter(box), rotation);
+    const turned = rotation ? rotatePoint(anchor, boxCenter(layout.box), rotation) : anchor;
     const svgRect = this.svg.getBoundingClientRect();
     const rootRect = this.root.getBoundingClientRect();
     const scaleX = svgRect.width / Math.max(1, doc.width);
     const scaleY = svgRect.height / Math.max(1, doc.height);
-    let left = svgRect.left - rootRect.left + corner.x * scaleX;
-    let top = svgRect.top - rootRect.top + corner.y * scaleY;
-    let width = box.width * scaleX;
-    let height = box.height * scaleY;
     Object.assign(session.element.style, {
-      left: `${left}px`,
-      top: `${top}px`,
-      // Scale the entire editor, including glyph widths, exactly like SVG/PNG,
-      // turned about its corner as the SVG turns the box about its centre.
-      width: `${box.width}px`,
-      height: `${box.height}px`,
-      transformOrigin: 'top left',
-      transform: `scale(${scaleX}, ${scaleY})${rotation ? ` rotate(${rotation}deg)` : ''}`,
-      padding: session.rectangleLabel
-        ? `${rectangleLayout.paddingTop}px ${RECTANGLE_LABEL_PADDING}px 0`
-        : `${TEXTBOX_PADDING}px`,
-      fontFamily: REDLINE_FONT_FAMILY,
-      fontSize: `${session.mark.fontSize ?? 16}px`,
-      lineHeight: String(TEXTBOX_LINE_HEIGHT),
-      fontWeight: session.rectangleLabel ? '600' : '400',
-      textAlign: session.rectangleLabel ? 'center' : 'left',
-      color: session.rectangleLabel ? rectangleLabelColor(session.mark) : '#292D32',
-      borderWidth: '0px',
-      outline: '1px solid #6EA8FF',
-      backgroundColor: session.rectangleLabel ? 'transparent' : redlineTextBoxFill(session.mark.backgroundOpacity),
+      left: `${svgRect.left - rootRect.left + turned.x * scaleX}px`,
+      top: `${svgRect.top - rootRect.top + turned.y * scaleY}px`,
+      width: '2px',
+      height: `${Math.max(2, anchor.height * scaleY)}px`,
     });
-    if (rotation) {
-      // Place the actions against the turned editor's on-screen extent.
-      const turned = session.element.getBoundingClientRect();
-      ({ width, height } = turned);
-      left = turned.left - rootRect.left;
-      top = turned.top - rootRect.top;
-    }
+
+    const box = layout.box;
+    const corners = [
+      { x: box.x, y: box.y }, { x: box.x + box.width, y: box.y },
+      { x: box.x + box.width, y: box.y + box.height }, { x: box.x, y: box.y + box.height },
+    ].map(point => rotation ? rotatePoint(point, boxCenter(box), rotation) : point);
+    const left = svgRect.left - rootRect.left + Math.min(...corners.map(point => point.x)) * scaleX;
+    const top = svgRect.top - rootRect.top + Math.min(...corners.map(point => point.y)) * scaleY;
+    const width = (Math.max(...corners.map(point => point.x)) - Math.min(...corners.map(point => point.x))) * scaleX;
+    const height = (Math.max(...corners.map(point => point.y)) - Math.min(...corners.map(point => point.y))) * scaleY;
     const controlsRect = session.controls.getBoundingClientRect();
     const gutter = 8;
-    const controlsLeft = Math.min(
-      Math.max(gutter, left + width - controlsRect.width),
-      Math.max(gutter, rootRect.width - controlsRect.width - gutter),
-    );
+    session.controls.style.left = `${Math.min(Math.max(gutter, left + width - controlsRect.width), Math.max(gutter, rootRect.width - controlsRect.width - gutter))}px`;
     const below = top + height + 6;
-    const controlsTop = below + controlsRect.height <= rootRect.height - gutter
-      ? below
-      : Math.max(gutter, top - controlsRect.height - 6);
-    session.controls.style.left = `${controlsLeft}px`;
-    session.controls.style.top = `${controlsTop}px`;
+    session.controls.style.top = `${below + controlsRect.height <= rootRect.height - gutter ? below : Math.max(gutter, top - controlsRect.height - 6)}px`;
   }
 
   /** End the edit. Returns false when nothing was being edited. */
-  finish({ commit, restoreFocus = false }) {
+  finish({ commit, restoreFocus = false } = {}) {
     const session = this.session;
     if (!session) return false;
-    this.position();
+    const cleanText = session.element.value.trim();
+    const preview = cleanText === session.preview.text ? session.preview : remapTextRuns(session.preview, cleanText, session.typingStyle);
     this.session = null;
     session.element.remove();
     session.controls.remove();
     this.onFinish({
       mark: session.mark,
-      geometry: { start: session.preview.start, end: session.preview.end },
+      preview,
+      geometry: preview.start && preview.end ? { start: preview.start, end: preview.end } : null,
       creating: session.creating,
       commit,
-      text: session.element.value.trim(),
+      text: cleanText,
     });
+    this.onChange();
     if (restoreFocus) this.svg.focus({ preventScroll: true });
     return true;
   }

@@ -23,16 +23,20 @@ export const LINE_WEIGHTS = [
 
 /** Stored highlighter width; it paints four times wider, never below 6px. */
 export const HIGHLIGHTER_WIDTHS = [['12 px', 3], ['16 px', 4], ['24 px', 6], ['32 px', 8], ['40 px', 10]];
-export const HIGHLIGHTER_OPACITIES = [['20%', 0.2], ['35%', 0.35], ['50%', 0.5], ['65%', 0.65]];
 export const FONT_SIZES = [12, 14, 16, 20, 24, 32];
+export const TEXT_ALIGNMENTS = [['Left', 'left'], ['Center', 'center'], ['Right', 'right']];
+export const VERTICAL_ALIGNMENTS = [['Top', 'top'], ['Middle', 'middle'], ['Bottom', 'bottom']];
 export const TEXT_BACKGROUNDS = [['Opaque', 1], ['75%', 0.75], ['50%', 0.5], ['25%', 0.25], ['None', 0]];
-export const FILL_OPACITIES = [0.1, 0.25, 0.5, 0.75, 1];
 export const DEFAULT_FILL_OPACITY = 0.25;
 export const NOTE_MARKERS = [['1, 2, 3', 'numeric'], ['A, B, C', 'alpha']];
 export const BULLET_SCHEME_OPTIONS = [['1–9', 'numeric'], ['A–Z', 'alpha']];
 
 /** Marks that enclose an area and so offer outline and fill treatments. */
 export const CLOSED_TYPES = new Set(['rectangle', 'ellipse', 'polygon']);
+/** Marks whose primary line/border can carry independent opacity. */
+export const STROKE_OPACITY_TYPES = new Set([
+  'pen', 'brush', 'line', 'arrow', 'polyline', 'polygon', 'rectangle', 'ellipse', 'textbox',
+]);
 /** Marks with two free ends that can carry decorations. */
 export const LINE_TYPES = new Set(['line', 'arrow', 'polyline']);
 export const PATH_TYPES = new Set(['pen', 'brush', 'polyline', 'polygon']);
@@ -43,12 +47,6 @@ export const BOX_TYPES = new Set(['rectangle', 'ellipse', 'line', 'arrow', 'text
  * are fixed-size markers.
  */
 export const FRAMED_TYPES = new Set(['rectangle', 'ellipse', 'textbox', 'pen', 'brush', 'polyline', 'polygon']);
-
-export const TREATMENTS = [
-  ['outline', 'Outline'],
-  ['outline-fill', 'Outline + fill'],
-  ['fill', 'Fill only'],
-];
 
 export const DECORATIONS = ['none', 'arrow', 'open-circle', 'filled-circle'];
 export const DECORATION_LABELS = {
@@ -172,6 +170,18 @@ function setIntent(next, value) {
   else delete next.intent;
 }
 
+/** A whole-object text style becomes the base style for every character. */
+function clearTextRunProperty(next, property) {
+  if (!Array.isArray(next.textRuns)) return;
+  const runs = next.textRuns.map(run => {
+    const changed = { ...run };
+    delete changed[property];
+    return changed;
+  }).filter(run => Object.keys(run).some(key => key !== 'start' && key !== 'end'));
+  if (runs.length) next.textRuns = runs;
+  else delete next.textRuns;
+}
+
 function withFillOpacity(next, opacity) {
   const clamped = Math.min(1, Math.max(0, Number(opacity) || 0));
   if (clamped > 0) {
@@ -189,6 +199,17 @@ function withFillOpacity(next, opacity) {
     delete next.fill;
     delete next.outline;
   }
+}
+
+function withStrokeOpacity(next, mark, opacity) {
+  if (!STROKE_OPACITY_TYPES.has(mark.type)) return;
+  const value = Number(opacity);
+  if (!Number.isFinite(value)) return;
+  const clamped = Math.min(1, Math.max(0, value));
+  // Existing path documents always carry opacity. Other marks omit the
+  // default so old JSON remains compact and unchanged.
+  if (clamped === 1 && !['pen', 'brush', 'polyline', 'polygon'].includes(mark.type)) delete next.opacity;
+  else next.opacity = clamped;
 }
 
 /**
@@ -215,12 +236,16 @@ export function applyStyleChange(mark, { property, value }) {
       if (closed && redlineMarkFill(mark) && !mark.fill) next.fill = mark.color;
       next.color = value.color;
       if (next.fill && sameColor(next.fill, next.color)) delete next.fill;
+      if (closed && value.enable === true) delete next.outline;
+      withStrokeOpacity(next, mark, value.opacity);
       setIntent(next, value);
       break;
     }
     case 'fillColor': {
       if (!closed || !isHexColor(value?.color)) return mark;
-      if (!redlineMarkFill(mark)) withFillOpacity(next, value.fillOpacity ?? mark.savedFill?.opacity ?? DEFAULT_FILL_OPACITY);
+      if (!redlineMarkFill(mark) || value.fillOpacity !== undefined) {
+        withFillOpacity(next, value.fillOpacity ?? mark.savedFill?.opacity ?? DEFAULT_FILL_OPACITY);
+      }
       if (sameColor(value.color, next.color)) delete next.fill;
       else next.fill = value.color;
       setIntent(next, value);
@@ -253,15 +278,45 @@ export function applyStyleChange(mark, { property, value }) {
       break;
     }
     case 'opacity': {
-      const opacity = Number(value);
-      if (!Number.isFinite(opacity)) return mark;
-      next.opacity = Math.min(1, Math.max(0, opacity));
+      if (!STROKE_OPACITY_TYPES.has(mark.type) || !Number.isFinite(Number(value))) return mark;
+      withStrokeOpacity(next, mark, value);
       break;
     }
     case 'fontSize': {
       const size = Number(value);
-      if (!['textbox', 'rectangle'].includes(mark.type) || !Number.isFinite(size) || size < 10) return mark;
+      if (!['textbox', 'rectangle', 'ellipse', 'polygon'].includes(mark.type) || !Number.isFinite(size) || size < 10) return mark;
       next.fontSize = size;
+      clearTextRunProperty(next, property);
+      break;
+    }
+    case 'fontFamily': {
+      if (!['textbox', 'rectangle', 'ellipse', 'polygon'].includes(mark.type) || typeof value !== 'string' || !value.trim()) return mark;
+      next.fontFamily = value.trim().slice(0, 160);
+      clearTextRunProperty(next, property);
+      break;
+    }
+    case 'textColor': {
+      if (!['textbox', 'rectangle', 'ellipse', 'polygon'].includes(mark.type) || !isHexColor(value)) return mark;
+      next.textColor = value;
+      clearTextRunProperty(next, property);
+      break;
+    }
+    case 'bold':
+    case 'italic':
+    case 'underline': {
+      if (!['textbox', 'rectangle', 'ellipse', 'polygon'].includes(mark.type)) return mark;
+      next[property] = Boolean(value);
+      clearTextRunProperty(next, property);
+      break;
+    }
+    case 'textAlign': {
+      if (!['textbox', 'rectangle', 'ellipse', 'polygon'].includes(mark.type) || !['left', 'center', 'right'].includes(value)) return mark;
+      next.textAlign = value;
+      break;
+    }
+    case 'verticalAlign': {
+      if (!['textbox', 'rectangle', 'ellipse', 'polygon'].includes(mark.type) || !['top', 'middle', 'bottom'].includes(value)) return mark;
+      next.verticalAlign = value;
       break;
     }
     case 'backgroundOpacity': {

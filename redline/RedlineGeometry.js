@@ -22,7 +22,8 @@ import {
   FRAMED_TYPES, PATH_TYPES, bulletGlyphColor, markDecorations, rectangleLabelColor, redlineMarkFill,
   redlineMarkStroked, redlineNoteGlyph, redlineTextBoxFill,
 } from './RedlineStyles.js';
-import { fontString, layoutNote, layoutRectangleLabel, layoutTextBox, NOTE_RADIUS } from './RedlineTextLayout.js';
+import { fontString, layoutNote, NOTE_RADIUS } from './RedlineTextLayout.js';
+import { layoutShapeText } from './RedlineShapeText.js';
 
 const EPSILON = 1e-6;
 
@@ -77,7 +78,7 @@ export function markFrame(mark) {
 }
 
 function strokeOf(mark, overrides = {}) {
-  return { color: mark.color, width: mark.width, opacity: 1, ...overrides };
+  return { color: mark.color, width: mark.width, opacity: mark.opacity ?? 1, ...overrides };
 }
 
 /** Width a stroke paints: the highlighter paints four times its stored width, never below 6px. */
@@ -178,6 +179,20 @@ function openPathPrimitives(points, mark, stroke) {
   return primitives;
 }
 
+function richTextPrimitive(mark, measurer, { fallbackColor = null } = {}) {
+  const styled = fallbackColor && !mark.textColor ? { ...mark, textColor: fallbackColor } : mark;
+  const layout = layoutShapeText(styled, measurer);
+  return {
+    kind: 'text',
+    lines: layout.lines.map(line => ({
+      text: layout.text.slice(line.start, line.end).replace(/\t/g, ' '),
+      x: line.x, y: line.y, runs: line.runs,
+    })),
+    font: { size: layout.fontSize, weight: 400 },
+    color: fallbackColor ?? '#292D32', anchor: 'start', clip: layout.clip,
+  };
+}
+
 /** Everything a renderer needs to draw one mark. */
 export function markPrimitives(mark, measurer) {
   const primitives = uprightPrimitives(mark, measurer);
@@ -205,11 +220,13 @@ function uprightPrimitives(mark, measurer) {
       }
       const stroke = strokeOf(mark, { opacity: mark.opacity ?? 1 });
       if (mark.type === 'polygon') {
-        return [{
+        const body = {
           kind: 'path', points, closed: true,
           fill: fill && points.length > 2 ? fill : null,
           stroke: stroked ? stroke : null,
-        }];
+          hitArea: Boolean(mark.text),
+        };
+        return mark.text ? [body, richTextPrimitive(mark, measurer)] : [body];
       }
       if (mark.type === 'polyline') return openPathPrimitives(points, mark, stroke);
       return [{ kind: 'path', points, closed: false, stroke, fill: null }];
@@ -226,30 +243,28 @@ function uprightPrimitives(mark, measurer) {
         hitArea: Boolean(mark.text),
       }];
       if (mark.text) {
-        const layout = layoutRectangleLabel(mark, measurer);
-        primitives.push({
-          kind: 'text', lines: layout.lines, font: { size: layout.fontSize, weight: 600 },
-          color: rectangleLabelColor(mark), anchor: 'middle', clip: layout.clip,
-        });
+        primitives.push(richTextPrimitive(mark, measurer, { fallbackColor: rectangleLabelColor(mark) }));
       }
       return primitives;
     }
     case 'ellipse': {
       const box = boxFromPoints(mark.start, mark.end);
-      return [{
+      const body = {
         kind: 'ellipse', cx: box.x + box.width / 2, cy: box.y + box.height / 2,
         rx: box.width / 2, ry: box.height / 2, fill, stroke: stroked ? strokeOf(mark) : null,
-      }];
+        hitArea: Boolean(mark.text),
+      };
+      return mark.text ? [body, richTextPrimitive(mark, measurer)] : [body];
     }
     case 'textbox': {
-      const layout = layoutTextBox(mark, measurer);
+      const box = boxFromPoints(mark.start, mark.end);
       return [
         {
-          kind: 'rect', ...layout.box, radius: 4, hitArea: true,
+          kind: 'rect', ...box, radius: 4, hitArea: true,
           fill: { color: redlineTextBoxFill(mark.backgroundOpacity), opacity: 1 },
           stroke: strokeOf(mark),
         },
-        { kind: 'text', lines: layout.lines, font: { size: layout.fontSize, weight: 400 }, color: '#292D32', anchor: 'start', clip: layout.clip },
+        richTextPrimitive(mark, measurer),
       ];
     }
     case 'bullet': {
@@ -374,7 +389,7 @@ function hitsPrimitive(primitive, point, tolerance) {
   const reach = tolerance + (primitive.stroke?.width ?? 0) / 2;
   if (primitive.kind === 'path') {
     if (!primitive.points.length) return false;
-    if (primitive.fill && primitive.points.length > 2 && pointInPolygon(point, primitive.points)) return true;
+    if ((primitive.fill || primitive.hitArea) && primitive.points.length > 2 && pointInPolygon(point, primitive.points)) return true;
     return Boolean(primitive.stroke) && distanceToPath(point, primitive.points, primitive.closed) <= reach;
   }
   if (primitive.kind === 'rect') {
@@ -398,7 +413,7 @@ function hitsPrimitive(primitive, point, tolerance) {
     const nx = (point.x - cx) / rx;
     const ny = (point.y - cy) / ry;
     const k = Math.hypot(nx, ny);
-    if (primitive.fill && k <= 1) return true;
+    if ((primitive.fill || primitive.hitArea) && k <= 1) return true;
     if (!primitive.stroke) return false;
     if (k < EPSILON) return Math.min(rx, ry) <= reach;
     const edge = { x: cx + (point.x - cx) / k, y: cy + (point.y - cy) / k };

@@ -76,6 +76,15 @@ async function run(dpr, { full }) {
     }, selector);
     /** A real mouse click on a control's centre. */
     const press = async selector => {
+      await evaluate(value => {
+        const node = globalThis.__redlineTestRoot.querySelector(value);
+        const context = node?.closest('[data-redline-context]');
+        if (!node || !context) return;
+        const box = node.getBoundingClientRect();
+        const area = context.getBoundingClientRect();
+        if (box.left < area.left) context.scrollLeft -= area.left - box.left + 4;
+        else if (box.right > area.right) context.scrollLeft += box.right - area.right + 4;
+      }, selector);
       const box = await rect(selector);
       if (!box.visible || !box.width) throw new Error(`Not clickable: ${selector}`);
       await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
@@ -248,7 +257,7 @@ async function run(dpr, { full }) {
     });
     check(`${tag} the Bullet tool is on the bar with an icon, accessible name and the U shortcut`,
       s.tool === 'bullet' && toolInfo.icon && toolInfo.label === 'Bullet (U)' && toolInfo.pressed === 'true', JSON.stringify(toolInfo));
-    check(`${tag} a new session starts with the legend hidden`, s.canvas === 'Legend hidden' && s.target === 'New bullets');
+    check(`${tag} a new session starts with the legend hidden`, s.canvas === 'Legend hidden' && s.target === 'Defaults:');
 
     await page.mouse.click(300, 300);
     s = await state();
@@ -890,7 +899,10 @@ async function run(dpr, { full }) {
 
       // -----------------------------------------------------------------------
       // Layout of the new controls at the review widths
-      for (const width of [1920, 1200, 800, 420]) {
+      // The unified strip's supported review width is 1200px and above. Its
+      // contextual lane scrolls horizontally instead of spawning a second
+      // toolbar or overflow menu.
+      for (const width of [1920, 1200]) {
         await page.setViewportSize({ width, height: 800 });
         await page.waitForTimeout(250);
         // A session sized to this window, as one started here would be.
@@ -900,12 +912,19 @@ async function run(dpr, { full }) {
           annotations: [bulletMark('1', bulletX, 300, { text: 'Price column is truncated at narrow widths' }), bulletMark('A', bulletX + 60, 360, { text: 'Legend rows wrap' })],
           legend: { visible: true, x: width - 316, y: 360, width: 300 },
         });
-        const fits = async selector => evaluate(({ selector, width }) => [...globalThis.__redlineTestRoot.querySelectorAll(selector)]
-          .filter(node => node.checkVisibility())
-          .map(node => {
+        const fits = async selector => evaluate(({ selector, width }) => {
+          const context = globalThis.__redlineTestRoot.querySelector('[data-redline-context]');
+          return [...globalThis.__redlineTestRoot.querySelectorAll(selector)]
+            .filter(node => node.checkVisibility())
+            .map(node => {
+              const before = node.getBoundingClientRect();
+              const area = context.getBoundingClientRect();
+              if (before.left < area.left) context.scrollLeft -= area.left - before.left + 4;
+              else if (before.right > area.right) context.scrollLeft += before.right - area.right + 4;
             const box = node.getBoundingClientRect();
             return { name: node.getAttribute('aria-label') || node.textContent.trim().slice(0, 24), left: box.left, right: box.right, ok: box.left >= 0 && box.right <= width };
-          }), { selector, width });
+            });
+        }, { selector, width });
         await programmaticClick('[data-redline-tool="bullet"]');
         await page.mouse.move(width - 3, 790);
         const defaults = await fits('[data-redline-control="stroke"] button, [data-redline-control="bulletScheme"] select, [data-redline-control="bulletNext"] span, [data-redline-control="legendToggle"] button');
@@ -919,7 +938,7 @@ async function run(dpr, { full }) {
         const editingState = await state();
         await page.screenshot({ path: path.join(SHOTS, `${width}-explanation-editing.png`) });
         await page.keyboard.press('Escape');
-        check(`at ${width}px the bullet, legend and explanation controls are visible and inside the window`,
+        check(`at ${width}px the bullet, legend and explanation controls are scroll-reachable inside the window`,
           defaults.length === 5 && legendControls.length === 6 && editing.length === 7 && editingState.focused
           && [...defaults, ...legendControls, ...editing].every(item => item.ok),
           JSON.stringify({ defaults: defaults.filter(item => !item.ok), legendControls: legendControls.filter(item => !item.ok), editing: editing.filter(item => !item.ok), counts: [defaults.length, legendControls.length, editing.length] }));

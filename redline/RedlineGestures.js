@@ -20,7 +20,9 @@ import {
 import { moveCursor } from './RedlineCursor.js';
 import { moveLegend, resizeLegend } from './RedlineLegend.js';
 import { TEXTBOX_MIN_HEIGHT, TEXTBOX_MIN_WIDTH } from './RedlineTextLayout.js';
-import { handleAt, resizeMark, rotateMark } from './RedlineTransform.js';
+import {
+  DIRECT_SELECTION_TYPES, directPointAt, directSegmentAt, handleAt, moveDirectPoint, resizeMark, rotateMark,
+} from './RedlineTransform.js';
 
 const DRAW_BOX_TOOLS = new Set(['line', 'arrow', 'rectangle', 'ellipse', 'textbox']);
 
@@ -71,10 +73,32 @@ export class RedlineGestures {
     if (tool === 'select') {
       // The selected mark's handles sit above every mark, as its frame does.
       const selected = host.selectedId ? doc.find(host.selectedId) : null;
+      if (host.selectionMode === 'direct' && selected && DIRECT_SELECTION_TYPES.has(selected.type)) {
+        const vertex = directPointAt(selected, point, { scale: host.scale() });
+        if (vertex !== null) {
+          host.selectVertex(vertex);
+          this.pointer = {
+            kind: 'vertex', pointerId: event.pointerId, start: point, last: point,
+            original: selected, vertex,
+          };
+          return true;
+        }
+        if (event.ctrlKey || event.metaKey) {
+          const segment = directSegmentAt(selected, point, { scale: host.scale() });
+          if (segment) {
+            host.insertVertex(point);
+            return false;
+          }
+        }
+        const hit = topmostMarkAt(doc.marks, point, this._tolerance(), host.measurer);
+        host.select(hit?.id ?? null);
+        if (!hit || !DIRECT_SELECTION_TYPES.has(hit.type)) host.setSelectionMode('object');
+        return Boolean(hit);
+      }
       const handle = this.handleAt(selected, point);
       if (handle) {
         this.pointer = {
-          kind: handle === 'rotate' ? 'rotate' : 'resize', pointerId: event.pointerId, start: point, last: point,
+          kind: handle === 'rotate' ? 'rotate' : handle === 'center' ? 'move' : 'resize', pointerId: event.pointerId, start: point, last: point,
           original: selected, handle, shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey,
         };
         return true;
@@ -218,7 +242,9 @@ export class RedlineGestures {
       host.render();
       return;
     }
-    if (gesture.kind === 'resize') {
+    if (gesture.kind === 'vertex') {
+      this.live = moveDirectPoint(gesture.original, gesture.vertex, gesture.start, point);
+    } else if (gesture.kind === 'resize') {
       this.live = resizeMark(gesture.original, gesture.handle, gesture.start, point, {
         scale: host.scale(), keepAspect: shiftKey, fromCenter: gesture.ctrl, measurer: host.measurer,
       });
@@ -301,13 +327,14 @@ export class RedlineGestures {
       host.render();
       return;
     }
-    if (gesture.kind === 'resize' || gesture.kind === 'rotate' || gesture.kind === 'move') {
+    if (gesture.kind === 'resize' || gesture.kind === 'rotate' || gesture.kind === 'move' || gesture.kind === 'vertex') {
       const live = this.live;
       this.live = null;
       const moved = point && this._screenDistance(gesture.start, point) >= 1;
       if (!cancelled && live && moved) {
         doc.replace(gesture.original.id, live);
         if (gesture.kind === 'rotate') host.setMessage(`Rotated to ${Math.round(live.rotation ?? 0) % 360}° · Shift snaps to 15° steps`);
+        if (gesture.kind === 'vertex') host.setMessage(`Moved point ${gesture.vertex + 1} · V returns to object selection`);
       } else if (!cancelled && gesture.bullet) {
         host.setMessage(`Bullet ${gesture.original.label}: double-click to edit its explanation, or drag to move it`);
       }

@@ -30,10 +30,13 @@ export const HANDLE_REACH = 8;
 export const ROTATE_KNOB_RADIUS = 9;
 /** Distance from the frame edge to the centre of the rotate knob. */
 export const ROTATE_KNOB_OFFSET = 30;
+export const DIRECT_POINT_RADIUS = 2;
+export const DIRECT_POINT_REACH = 8;
 /** Shift while rotating snaps to multiples of this many degrees. */
 export const ROTATION_SNAP = 15;
 
 const LINE_END_TYPES = new Set(['line', 'arrow']);
+export const DIRECT_SELECTION_TYPES = new Set(['pen', 'brush', 'polyline', 'polygon']);
 const ORIGIN = { x: 0, y: 0 };
 
 /** Direction of each frame handle from the frame centre, in upright coordinates. */
@@ -112,6 +115,7 @@ export function selectionHandles(mark, { scale = { x: 1, y: 1 }, bounds = null }
     const upright = { x: center.x + (ux * box.width) / 2, y: center.y + (uy * box.height) / 2 };
     handles.push({ name, ...rotatePoint(upright, center, rotation) });
   }
+  handles.push({ name: 'center', x: center.x, y: center.y });
   handles.push(rotateKnob(frame, scale, bounds));
   return handles;
 }
@@ -139,12 +143,89 @@ export function handleAt(mark, point, options = {}) {
  */
 export function handleCursor(mark, handle, scale = { x: 1, y: 1 }) {
   if (handle === 'rotate') return 'rotate';
+  if (handle === 'center') return 'move';
   if (handle === 'start' || handle === 'end') return 'endpoint';
   const direction = HANDLE_DIRECTIONS[handle];
   if (!direction) return null;
   const turned = rotatePoint({ x: direction[0], y: direction[1] }, ORIGIN, markRotation(mark));
   const degrees = (((Math.atan2(turned.y * scale.y, turned.x * scale.x) * 180) / Math.PI) + 360) % 180;
   return `resize-${['e', 'se', 's', 'sw'][Math.round(degrees / 45) % 4]}`;
+}
+
+/** Vertex positions as painted on the page, including object rotation. */
+export function directSelectionPoints(mark) {
+  if (!DIRECT_SELECTION_TYPES.has(mark?.type)) return [];
+  const frame = selectionFrame(mark);
+  const rotation = frame?.rotation ?? 0;
+  return (mark.points ?? []).map((point, index) => ({
+    index,
+    ...(rotation ? rotatePoint(point, frame.center, rotation) : point),
+  }));
+}
+
+export function directPointAt(mark, point, { scale = { x: 1, y: 1 } } = {}) {
+  let best = null;
+  let distance = Infinity;
+  for (const vertex of directSelectionPoints(mark)) {
+    const current = Math.hypot((point.x - vertex.x) * scale.x, (point.y - vertex.y) * scale.y);
+    if (current <= DIRECT_POINT_REACH && current < distance) { best = vertex.index; distance = current; }
+  }
+  return best;
+}
+
+function closestOnSegment(point, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const denominator = dx * dx + dy * dy;
+  const t = denominator > 1e-9 ? Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / denominator)) : 0;
+  const projected = { x: a.x + dx * t, y: a.y + dy * t };
+  return { point: projected, distance: Math.hypot(point.x - projected.x, point.y - projected.y) };
+}
+
+/** Nearest editable segment, returned as the insertion index and point. */
+export function directSegmentAt(mark, point, { scale = { x: 1, y: 1 }, reach = 7 } = {}) {
+  if (!DIRECT_SELECTION_TYPES.has(mark?.type) || mark.points.length < 2) return null;
+  const frame = selectionFrame(mark);
+  const local = frame?.rotation ? rotatePoint(point, frame.center, -frame.rotation) : point;
+  const scaled = value => ({ x: value.x * scale.x, y: value.y * scale.y });
+  const target = scaled(local);
+  let best = null;
+  const count = mark.type === 'polygon' ? mark.points.length : mark.points.length - 1;
+  for (let index = 0; index < count; index++) {
+    const next = (index + 1) % mark.points.length;
+    const closest = closestOnSegment(target, scaled(mark.points[index]), scaled(mark.points[next]));
+    if (closest.distance <= reach && (!best || closest.distance < best.distance)) {
+      best = { index: index + 1, distance: closest.distance, point: { x: closest.point.x / scale.x, y: closest.point.y / scale.y } };
+    }
+  }
+  return best;
+}
+
+export function moveDirectPoint(mark, index, from, to) {
+  if (!DIRECT_SELECTION_TYPES.has(mark?.type) || !mark.points[index]) return mark;
+  const frame = selectionFrame(mark);
+  const a = frame?.rotation ? rotatePoint(from, frame.center, -frame.rotation) : from;
+  const b = frame?.rotation ? rotatePoint(to, frame.center, -frame.rotation) : to;
+  const points = mark.points.map((point, current) => current === index
+    ? { x: point.x + b.x - a.x, y: point.y + b.y - a.y }
+    : point);
+  return { ...mark, points };
+}
+
+export function insertDirectPoint(mark, point, options = {}) {
+  const segment = directSegmentAt(mark, point, options);
+  if (!segment) return null;
+  const points = [...mark.points];
+  points.splice(segment.index, 0, segment.point);
+  return { mark: { ...mark, points }, index: segment.index };
+}
+
+export function removeDirectPoint(mark, index) {
+  if (!DIRECT_SELECTION_TYPES.has(mark?.type) || !mark.points[index]) return null;
+  const minimum = mark.type === 'polygon' ? 3 : 2;
+  if (mark.points.length <= minimum) return null;
+  const points = mark.points.filter((_point, current) => current !== index);
+  return { ...mark, points };
 }
 
 /**

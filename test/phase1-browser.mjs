@@ -1,6 +1,6 @@
 /**
  * Phase 1 acceptance: the four reproduced review bugs, the light workspace,
- * style targeting, treatments, shapes, line ends, constraints, duplicate,
+ * style targeting, Fill/Outline dialogs, shapes, line ends, constraints, duplicate,
  * nudge and eraser geometry — all through real pointer and keyboard input.
  *
  *   node test/phase1-browser.mjs [--headed]
@@ -93,11 +93,31 @@ try {
   };
   const byId = async id => (await exportJSON('probe')).document.annotations.find(mark => mark.id === id);
   const target = () => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-target]').textContent);
-  const pickPreset = async (colorTarget, preset) => {
+  const openColor = async colorTarget => {
     await click(`[data-redline-color="${colorTarget}"]`);
     await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette opened');
+  };
+  const setDialogOpacity = opacity => evaluate(value => {
+    const slider = globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"] input[type="range"]');
+    slider.value = String(Math.round(value * 100));
+    slider.dispatchEvent(new Event('input'));
+  }, opacity);
+  const pickPreset = async (colorTarget, preset, opacity = null) => {
+    await openColor(colorTarget);
+    if (opacity !== null) await setDialogOpacity(opacity);
     await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-picker] [data-tab="presets"]').click());
     await click(`[data-redline-picker] [data-preset="${preset}"]`);
+    await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
+  };
+  const applyOpacity = async (colorTarget, opacity) => {
+    await openColor(colorTarget);
+    await setDialogOpacity(opacity);
+    await page.keyboard.press('Escape');
+    await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
+  };
+  const removePaint = async colorTarget => {
+    await openColor(colorTarget);
+    await click('[data-redline-no-paint]');
     await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
   };
   const hideChrome = hidden => evaluate(value => {
@@ -158,7 +178,7 @@ try {
   const svgLines = await evaluate(() => Object.fromEntries(['www', 'multi'].map(id => [id,
     [...globalThis.__redlineTestRoot.querySelectorAll(`[data-redline-id="${id}"] tspan`)].map(node => node.textContent)])));
   check('the preview wraps WWW WWW by measured width, as the PNG does',
-    JSON.stringify(svgLines.www) === JSON.stringify(['WWW', 'WWW']), JSON.stringify(svgLines.www));
+    JSON.stringify(svgLines.www.map(line => line.trimEnd())) === JSON.stringify(['WWW', 'WWW']), JSON.stringify(svgLines.www));
   check('long words break and blank lines survive in the preview',
     svgLines.multi.length >= 5 && svgLines.multi[1] === '' && svgLines.multi.join('').replace(/\s/g, '') === longText.replace(/\s/g, ''),
     JSON.stringify(svgLines.multi));
@@ -457,19 +477,22 @@ try {
   // Style targeting: selection versus drawing defaults
   await loadDocument('targeting', []);
   await click('[data-redline-tool="rectangle"]');
-  await click('[data-treatment="outline"]');
   await drag(100, 300, 250, 400);
   const first = (await exportJSON('first')).document.annotations[0];
-  check('the style row names new-mark defaults while a drawing tool is active', await target() === 'New rectangles');
+  const defaultsContext = await evaluate(() => {
+    const context = globalThis.__redlineTestRoot.querySelector('[data-redline-context]');
+    return { target: context.querySelector('[data-redline-target]').textContent, label: context.getAttribute('aria-label') };
+  });
+  check('the style row identifies new-mark defaults without repeating the active tool',
+    defaultsContext.target === 'Defaults:' && defaultsContext.label === 'Style for new rectangles', JSON.stringify(defaultsContext));
   await evaluate(() => {
     const select = globalThis.__redlineTestRoot.querySelector('select[aria-label="Line weight"]');
     select.value = select.options[6].value;
     select.dispatchEvent(new Event('change'));
   });
-  await click('[data-treatment="outline-fill"]');
-  await click('[data-fill-opacity="0.75"]');
+  await applyOpacity('fill', 0.75);
   const untouched = (await exportJSON('untouched')).document.annotations[0];
-  check('drawing presets never restyle the last-created mark', JSON.stringify(untouched) === JSON.stringify(first), JSON.stringify({ first, untouched }));
+  check('drawing defaults never restyle the last-created mark', JSON.stringify(untouched) === JSON.stringify(first), JSON.stringify({ first, untouched }));
   await drag(300, 300, 450, 400);
   const second = (await exportJSON('second')).document.annotations[1];
   check('the next mark uses the new defaults', second.fillOpacity === 0.75 && Math.abs(second.width - 4) < 1e-9, JSON.stringify(second));
@@ -479,31 +502,30 @@ try {
   await waitUntil(async () => (await target()) === 'Selected rectangle', 'first selected');
   const selectionControls = await evaluate(() => {
     const root = globalThis.__redlineTestRoot;
-    return { treatment: root.querySelector('[data-treatment][aria-pressed="true"]')?.dataset.treatment,
+    return { fill: root.querySelector('[data-redline-color="fill"]').getAttribute('aria-label'),
+      outline: root.querySelector('[data-redline-color="stroke"]').getAttribute('aria-label'),
       width: root.querySelector('select[aria-label="Line weight"]').value, context: root.querySelector('[data-redline-context]').getAttribute('aria-label') };
   });
   check('selecting a mark shows that mark\'s own style, labelled as the selection',
-    selectionControls.treatment === 'outline' && Number(selectionControls.width) === first.width && /selected rectangle/.test(selectionControls.context),
+    /No fill/i.test(selectionControls.fill) && !/No outline/i.test(selectionControls.outline)
+    && Number(selectionControls.width) === first.width && /selected rectangle/.test(selectionControls.context),
     JSON.stringify(selectionControls));
-  await click('[data-treatment="fill"]');
-  await click('[data-fill-opacity="0.1"]');
-  await pickPreset('fill', 'question');
+  await pickPreset('fill', 'question', 0.1);
+  await removePaint('stroke');
   const styled = (await exportJSON('styled')).document.annotations;
   check('selection edits change only the selected mark',
     styled[0].fillOpacity === 0.1 && styled[0].outline === false && styled[0].fill.toUpperCase() === '#D97706'
     && JSON.stringify(styled[1]) === JSON.stringify(second), JSON.stringify(styled));
   await click('[data-redline-tool="rectangle"]');
   const defaultsAfter = await evaluate(() => ({
-    treatment: globalThis.__redlineTestRoot.querySelector('[data-treatment][aria-pressed="true"]')?.dataset.treatment,
-    opacity: globalThis.__redlineTestRoot.querySelector('[data-fill-opacity][aria-pressed="true"]')?.dataset.fillOpacity,
+    outline: globalThis.__redlineTestRoot.querySelector('[data-redline-color="stroke"]').getAttribute('aria-label'),
+    fill: globalThis.__redlineTestRoot.querySelector('[data-redline-color="fill"]').getAttribute('aria-label'),
   }));
   check('selection edits leave the drawing defaults alone',
-    defaultsAfter.treatment === 'outline-fill' && defaultsAfter.opacity === '0.75', JSON.stringify(defaultsAfter));
-  await page.keyboard.press('Control+z');
+    !/No outline/i.test(defaultsAfter.outline) && /75% opacity/.test(defaultsAfter.fill), JSON.stringify(defaultsAfter));
   await page.keyboard.press('Control+z');
   await page.keyboard.press('Control+z');
   const undone = (await exportJSON('undone')).document.annotations[0];
-  await page.keyboard.press('Control+y');
   await page.keyboard.press('Control+y');
   await page.keyboard.press('Control+y');
   const redone = (await exportJSON('redone')).document;
@@ -514,14 +536,16 @@ try {
   await click('[data-redline-tool="select"]');
   await page.mouse.click(375, 350);
   await waitUntil(async () => (await target()) === 'Selected rectangle', 'imported mark selected');
+  await openColor('fill');
   const exact = await evaluate(() => {
     const root = globalThis.__redlineTestRoot;
-    const custom = root.querySelector('[data-fill-opacity="custom"]');
-    return { customHidden: custom.hidden, customPressed: custom.getAttribute('aria-pressed'), customText: custom.textContent.trim(),
+    const slider = root.querySelector('[data-dialog="redline-color"] input[type="range"]');
+    return { opacity: slider.value, output: root.querySelector('[data-redline-color-opacity-output]').value,
       width: root.querySelector('select[aria-label="Line weight"]').value };
   });
+  await page.keyboard.press('Escape');
   check('an imported mark\'s unlisted opacity and weight are shown exactly, not rounded',
-    !exact.customHidden && exact.customPressed === 'true' && exact.customText === '35%' && exact.width === '7', JSON.stringify(exact));
+    exact.opacity === '35' && exact.output === '35%' && exact.width === '7', JSON.stringify(exact));
 
   // ---------------------------------------------------------------------------
   // Graduated fill opacity: preview and PNG
@@ -547,14 +571,54 @@ try {
   await click('[data-redline-tool="select"]');
   await page.mouse.click(180, 360);
   await waitUntil(async () => (await target()) === 'Selected rectangle', 'opacity mark selected');
-  const swatches = await evaluate(() => [...globalThis.__redlineTestRoot.querySelectorAll('[data-fill-opacity]:not([data-fill-opacity="custom"])')].map(node => ({
-    value: node.dataset.fillOpacity,
-    paint: getComputedStyle(node.querySelector('[data-redline-opacity-swatch] > span')).opacity,
-    ground: getComputedStyle(node.querySelector('[data-redline-opacity-swatch]')).backgroundImage.includes('conic-gradient'),
-  })));
-  check('fill opacity choices preview real transparency over a checkerboard',
-    swatches.map(item => item.value).join() === '0.1,0.25,0.5,0.75,1' && swatches.every(item => item.ground && Number(item.paint) === Number(item.value)),
-    JSON.stringify(swatches));
+  await openColor('fill');
+  const slider = await evaluate(() => {
+    const root = globalThis.__redlineTestRoot;
+    const input = root.querySelector('[data-dialog="redline-color"] input[type="range"]');
+    return { min: input.min, max: input.max, step: input.step, value: input.value,
+      none: root.querySelector('[data-redline-no-paint]').textContent };
+  });
+  check('fill opacity is one continuous slider beside No Fill',
+    JSON.stringify(slider) === JSON.stringify({ min: '1', max: '100', step: '1', value: '10', none: 'No Fill' }), JSON.stringify(slider));
+  await setDialogOpacity(0.37);
+  const liveFill = await evaluate(() => {
+    const root = globalThis.__redlineTestRoot;
+    return { open: root.querySelector('[data-dialog="redline-color"]').open,
+      opacity: root.querySelector('[data-redline-id="o0"] > rect')?.getAttribute('fill-opacity'),
+      apply: Boolean(root.querySelector('[data-redline-color-apply]')) };
+  });
+  check('moving the fill slider applies immediately without changing colour or pressing Apply',
+    liveFill.open && liveFill.opacity === '0.37' && !liveFill.apply, JSON.stringify(liveFill));
+  await page.keyboard.press('Escape');
+  await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
+  check('the slider accepts an arbitrary fill opacity', (await byId('o0')).fillOpacity === 0.37, JSON.stringify(await byId('o0')));
+  await openColor('stroke');
+  const outlineDialog = await evaluate(() => {
+    const root = globalThis.__redlineTestRoot;
+    const input = root.querySelector('[data-dialog="redline-color"] input[type="range"]');
+    return { value: input.value, none: root.querySelector('[data-redline-no-paint]').textContent };
+  });
+  check('the same dialog gives the outline its own opacity and No Outline action',
+    JSON.stringify(outlineDialog) === JSON.stringify({ value: '100', none: 'No Outline' }), JSON.stringify(outlineDialog));
+  await setDialogOpacity(0.55);
+  await setDialogOpacity(0.42);
+  const liveStrokeOpacity = await evaluate(() => globalThis.__redlineTestRoot
+    .querySelector('[data-redline-id="o0"] > rect')?.getAttribute('stroke-opacity'));
+  check('the outline slider also applies live, and repeated movement needs no colour change',
+    liveStrokeOpacity === '0.42', String(liveStrokeOpacity));
+  await page.keyboard.press('Escape');
+  await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
+  const outlined = await byId('o0');
+  check('the live outline opacity remains in the document after the dialog closes',
+    outlined.opacity === 0.42 && outlined.outline !== false, JSON.stringify(outlined));
+  await page.keyboard.press('Control+z');
+  const opacityUndone = await byId('o0');
+  await click('[data-redline-action="redo"]');
+  const opacityRedone = await byId('o0');
+  check('a run of live slider movement is one undo step',
+    opacityUndone.opacity === undefined && opacityUndone.outline === false
+    && opacityRedone.opacity === 0.42 && opacityRedone.outline !== false,
+    JSON.stringify({ opacityUndone, opacityRedone }));
 
   // ---------------------------------------------------------------------------
   // Shapes, Shift constraints, and line ends

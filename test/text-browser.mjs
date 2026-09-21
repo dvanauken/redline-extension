@@ -26,14 +26,20 @@ try {
         const root = globalThis.__redlineTestRoot;
         const input = root.querySelector('[data-redline-text-editor]');
         if (!input) return null;
-        const r = input.getBoundingClientRect();
+        const native = input.getBoundingClientRect();
         const style = getComputedStyle(input);
+        const mark = [...root.querySelectorAll('[data-redline-type="textbox"]')].at(-1);
+        const shape = mark?.querySelector('rect');
+        const r = shape?.getBoundingClientRect() ?? native;
+        const text = mark?.querySelector('text');
         return {
           x: r.x, y: r.y, width: r.width, height: r.height, value: input.value,
-          background: style.backgroundColor, color: style.color,
+          background: shape?.getAttribute('fill'), color: text?.getAttribute('fill'),
           focused: root.activeElement === input,
           scrollHeight: input.scrollHeight, clientHeight: input.clientHeight,
           marksBehind: root.querySelectorAll('[data-redline-type="textbox"]').length,
+          nativeWidth: native.width, nativeOpacity: style.opacity,
+          caret: Boolean(root.querySelector('[data-redline-text-caret]')),
         };
       });
       const marks = () => evaluate(() => [...globalThis.__redlineTestRoot.querySelectorAll('[data-redline-type="textbox"]')].map(node => {
@@ -55,9 +61,11 @@ try {
       await page.mouse.click(160, 260);
       const empty = await editor();
       assert.ok(empty?.focused, 'one click opens and focuses text editing');
-      assert.equal(empty.background, 'rgba(255, 255, 255, 0.75)');
-      assert.equal(empty.color, 'rgb(41, 45, 50)');
-      assert.equal(empty.marksBehind, 0, 'the translucent editor has no duplicate backing beneath it');
+      assert.equal(empty.background, 'rgba(255,255,255,0.75)');
+      assert.equal(empty.color, '#292D32');
+      assert.equal(empty.marksBehind, 1, 'the shared SVG preview paints the editing shape exactly once');
+      assert.ok(empty.nativeWidth <= 3 && empty.nativeOpacity === '0.01' && empty.caret,
+        'native input remains focused while the custom canvas caret is visible');
       assert.equal(empty.x, 160);
       assert.equal(empty.y, 260);
 
@@ -69,7 +77,7 @@ try {
       const grown = await editor();
       assert.ok(grown.height > empty.height, 'wrapping and newlines expand the background vertically');
       assert.ok(grown.width <= 601, 'long text wraps at a readable width');
-      assert.ok(grown.scrollHeight <= grown.clientHeight + 1, 'all typed lines fit without internal scrolling');
+      assert.ok(grown.caret, 'the custom caret remains visible after wrapping and newlines');
       await page.screenshot({ path: 'test-artifacts/text-live-dpr' + dpr + '.png' });
       const text = grown.value.trim();
       await page.keyboard.press('Control+Enter');
@@ -94,7 +102,7 @@ try {
       assert.equal((await marks()).length, 1, 'redo restores the entire text annotation');
 
       await page.mouse.dblclick(saved.x + 20, saved.y + 20);
-      assert.equal((await editor()).marksBehind, 0, 'existing text is hidden while its editor paints');
+      assert.equal((await editor()).marksBehind, 1, 'existing text is replaced by one live SVG editing preview');
       await page.keyboard.press('Control+End');
       await page.keyboard.press('Enter');
       await page.keyboard.type('A later edit adds another line.');
@@ -123,7 +131,7 @@ try {
       const resized = await editor();
       assert.ok(Math.abs(resized.x - 120) < 1 && Math.abs(resized.y - 160) < 1);
       assert.ok(resized.width > resizedEmpty.width);
-      assert.ok(resized.scrollHeight <= resized.clientHeight + 1);
+      assert.ok(resized.caret);
       await page.keyboard.press('Control+Enter');
       const last = (await marks()).at(-1);
       assert.ok(Math.abs(last.width - resized.width) < 1 && Math.abs(last.height - resized.height) < 1);

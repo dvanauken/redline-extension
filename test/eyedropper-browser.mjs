@@ -93,7 +93,11 @@ try {
       await page.keyboard.press('Escape');await page.keyboard.press('Escape');
 
       await page.setViewportSize({width:420,height:800});await page.waitForTimeout(100);
-      await h.press('[data-redline-color="stroke"]');
+      // The strip is horizontally scrollable below the supported 1200px
+      // baseline. Open the palette directly here; this assertion is about the
+      // palette's own narrow layout, not the strip's scroll position.
+      await access.evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-color="stroke"]').click());
+      await waitUntil(async()=>(await state()).palette,'narrow palette opened');
       const button=await h.rect('[data-redline-eyedropper-button]');
       check(tag+'Pick from page stays reachable at 420px',button.visible && button.x>=0 && button.right<=420);
       await page.screenshot({path:path.join('test-artifacts/eyedropper','dpr'+dpr+'-palette-420.png')});

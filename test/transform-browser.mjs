@@ -130,7 +130,7 @@ try {
   // Redo is still available after the undo; any new edit would clear it.
   await page.mouse.click(expected.e.x, expected.e.y);
   check('clicking a handle without dragging keeps the selection and adds no edit',
-    Object.keys(await handles()).length === 9
+    Object.keys(await handles()).length === 10
     && await evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-redline-action="redo"]').disabled));
 
   // Rotate with the knob; Shift snaps to 15° steps.
@@ -161,7 +161,7 @@ try {
   await page.mouse.click(400, 350);
   check('the old upright outline no longer selects the shape', Object.keys(await handles()).length === 0);
   await page.mouse.click(450, 350);
-  check('the turned outline does', Object.keys(await handles()).length === 9);
+  check('the turned outline does', Object.keys(await handles()).length === 10);
 
   // Preview and PNG agree on the rotated outline.
   await page.mouse.click(1000, 700);
@@ -230,7 +230,7 @@ try {
   await page.mouse.click(760, 220);
   await page.keyboard.type('Rotate me');
   await page.keyboard.press('Control+Enter');
-  await waitUntil(async () => Object.keys(await handles()).length === 9, 'text box selected with handles');
+  await waitUntil(async () => Object.keys(await handles()).length === 10, 'text box selected with handles');
   seen = await handles();
   await drag(seen.rotate, { x: seen.rotate.x + 200, y: seen.rotate.y + 80 }, { shift: true });
   let text = (await annotations()).find(mark => mark.type === 'textbox');
@@ -239,22 +239,19 @@ try {
   const middle = { x: (text.start.x + text.end.x) / 2, y: (text.start.y + text.end.y) / 2 };
   await page.mouse.dblclick(middle.x, middle.y);
   await waitUntil(() => evaluate(() => Boolean(globalThis.__redlineTestRoot.querySelector('[data-redline-text-editor]'))), 'text editor opened');
-  const editorTransform = await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-text-editor]').style.transform);
-  check('the text editor turns with the box', editorTransform.includes(`rotate(${text.rotation}deg)`), editorTransform);
+  const editorTransform = await evaluate(() => globalThis.__redlineTestRoot
+    .querySelector('[data-redline-type="textbox"] > g')?.getAttribute('transform') ?? '');
+  check('the live text preview turns with the box', editorTransform.includes(`rotate(${text.rotation} `), editorTransform);
   await page.keyboard.press('Control+End');
   await page.keyboard.type(' — and keep typing until the box has to grow wider and then wrap onto more lines of text');
   const editorCorner = await evaluate(() => {
-    const input = globalThis.__redlineTestRoot.querySelector('[data-redline-text-editor]');
-    // The turned textarea's own top-left corner, from its matrix.
-    const matrix = new DOMMatrix(getComputedStyle(input).transform);
-    const origin = input.getBoundingClientRect();
-    const rect = { width: input.offsetWidth, height: input.offsetHeight };
-    const corners = [[0, 0], [rect.width, 0], [rect.width, rect.height], [0, rect.height]].map(([x, y]) => matrix.transformPoint(new DOMPoint(x, y)));
-    const left = Math.min(...corners.map(p => p.x));
-    const top = Math.min(...corners.map(p => p.y));
-    return { x: origin.x - left, y: origin.y - top };
+    const root = globalThis.__redlineTestRoot;
+    const mark = root.querySelector('[data-redline-type="textbox"]');
+    const rect = mark.querySelector('rect');
+    const point = new DOMPoint(+rect.getAttribute('x'), +rect.getAttribute('y')).matrixTransform(rect.getScreenCTM());
+    return { x: point.x, y: point.y };
   });
-  check('while typing, the growing editor keeps its corner where the box was', nearPoint(editorCorner, cornerBefore, 2), `${show(cornerBefore)} vs ${show(editorCorner)}`);
+  check('while typing, the growing live preview keeps its corner where the box was', nearPoint(editorCorner, cornerBefore, 2), `${show(cornerBefore)} vs ${show(editorCorner)}`);
   await screenshot('06-text-editing-rotated');
   await page.keyboard.press('Control+Enter');
   text = (await annotations()).find(mark => mark.type === 'textbox');

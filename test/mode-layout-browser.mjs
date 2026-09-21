@@ -13,7 +13,7 @@ try {
  check('the fixture has a real desktop scrollbar',await page.evaluate(()=>innerWidth-document.documentElement.clientWidth>0));
  await page.mouse.move(500,300);await page.mouse.down();await page.mouse.move(650,340,{steps:8});await page.mouse.up();
  const arranged=await state();check('Browse allows the user to arrange the scene',arranged.view!==0);
- const annotate=await access.evaluate(()=>{const b=[...globalThis.__redlineTestRoot.querySelectorAll('button')].find(n=>n.textContent==='Annotate').getBoundingClientRect();return{x:b.x+15,y:b.y+15};});
+ const annotate=await access.evaluate(()=>{const b=globalThis.__redlineTestRoot.querySelector('[data-redline-mode-toggle]').getBoundingClientRect();return{x:b.x+b.width/2,y:b.y+b.height/2};});
  await page.mouse.click(annotate.x,annotate.y);await page.waitForTimeout(150);
  check('clicking Annotate preserves the arranged view and canvas size',JSON.stringify(await state())===JSON.stringify(arranged),JSON.stringify(await state()));
  check('Annotate still locks page scrolling',await page.evaluate(()=>getComputedStyle(document.body).overflow==='hidden'));

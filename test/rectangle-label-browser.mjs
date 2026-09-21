@@ -55,12 +55,13 @@ try {
     const live = await editor();
     assert.equal(live?.value, 'Conference room', 'typing on a selected rectangle opens its inline editor');
     assert.ok(live.focused, 'the direct editor owns keyboard focus');
-    assert.ok(Math.abs(live.x - 200) < 1 && Math.abs(live.y - 200) < 1, 'the editor sits inside the rectangle');
+    assert.ok(live.width <= 3 && live.x >= 200 && live.x <= 500 && live.y >= 200 && live.y <= 350,
+      'the hidden native input follows the custom caret inside the rectangle');
     await page.keyboard.press('Control+Enter');
 
     const painted = await label();
     assert.equal(painted?.value, 'Conference room');
-    assert.equal(painted?.anchor, 'middle');
+    assert.equal(painted?.anchor, 'start');
     await page.screenshot({ path: 'test-artifacts/rectangle-direct-label.png' });
     let json = await downloadJSON('rectangle-label.json');
     assert.equal(json.document.annotations[0].type, 'rectangle');

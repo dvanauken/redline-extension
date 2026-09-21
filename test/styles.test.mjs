@@ -47,6 +47,23 @@ test('fill and outline colours are targeted independently', () => {
   assert.equal('fill' in same, false, 'a fill equal to the outline is stored as following it');
 });
 
+test('Fill and Outline dialog edits carry arbitrary opacity and restore hidden paint', () => {
+  const filled = applyStyleChange(rect({ fillOpacity: 0.5 }), {
+    property: 'fillColor', value: { color: '#FDE68A', fillOpacity: 0.37 },
+  });
+  assert.equal(filled.fill, '#FDE68A');
+  assert.equal(filled.fillOpacity, 0.37);
+
+  const fillOnly = applyStyleChange(filled, { property: 'treatment', value: 'fill' });
+  const restoredOutline = applyStyleChange(fillOnly, {
+    property: 'strokeColor', value: { color: '#DC2626', opacity: 0.42, enable: true },
+  });
+  assert.equal(restoredOutline.color, '#DC2626');
+  assert.equal(restoredOutline.opacity, 0.42);
+  assert.equal(restoredOutline.outline, undefined);
+  assert.equal(restoredOutline.fill, '#FDE68A');
+});
+
 test('named presets carry intent; plain colours clear it only when asked', () => {
   const tagged = applyStyleChange(rect(), { property: 'strokeColor', value: { color: '#16A34A', intent: 'approved' } });
   assert.equal(tagged.intent, 'approved');

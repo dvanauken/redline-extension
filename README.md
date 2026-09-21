@@ -35,8 +35,8 @@ the extension does not fight the browser for the key.
 | --- | --- |
 | Tools | **Select**, **Eraser**, pen, highlighter, line, arrow, rectangle, ellipse, polyline, polygon, note, bullet and text are all direct controls on one strip |
 | Bullets | circles labelled 1–9 or A–Z, each with an optional multiline explanation; an optional, movable and resizable **Legend** lists them on the image |
-| Styles | contextual controls in the same toolbar strip edit either the selected mark or the defaults for new marks, never both, and say which |
-| Shapes | rectangles, ellipses and polygons take **Outline**, **Outline + fill** or **Fill only**, with fill opacity 10, 25, 50, 75 or 100% and independent outline and fill colours |
+| Styles | contextual controls in the same toolbar strip edit either the selected mark or the defaults for new marks, never both, and say which; shape text adds font, size, colour, bold, italic, underline and horizontal/vertical alignment |
+| Shapes | rectangles, ellipses and polygons have independent **Outline** and **Fill** swatches; each colour dialog includes a continuous opacity slider and **No Outline** or **No Fill** |
 | Line ends | lines, arrows and polylines take **None**, **Arrowhead**, **Open circle** or **Filled circle** at each end, with pictorial presets |
 | Colours | named presets (Issue, Question, Suggestion, Approved, Note, Neutral, Ink, Paper) record an intent in the export; **More colors** holds solid tints and shades; **Custom** accepts any hex value |
 | Markers | **Note labels** switches new note circles between `1, 2, 3` and `A, B, C`; the two run as separate sequences |
@@ -63,30 +63,32 @@ The contextual section in that same strip shows only what applies:
 
 | Target | Controls |
 | --- | --- |
-| Pen | Color, Thickness |
-| Highlighter | Color, Width, Opacity |
-| Line, Arrow, Polyline | Color, Thickness, end presets, Start and End |
-| Rectangle, Ellipse, Polygon | Treatment, Outline colour, Fill colour, Fill opacity, Thickness |
+| Pen | Color (with opacity), Thickness |
+| Highlighter | Color (with opacity), Width |
+| Line, Arrow, Polyline | Color (with opacity), Thickness, end presets, Start and End |
+| Rectangle, Ellipse, Polygon | Outline and Fill swatches, Thickness, text colour, font, size, bold, italic, underline and horizontal/vertical alignment |
 | Note | Color, Note labels (new notes only) |
 | Bullet | Color, Labels (1–9 or A–Z, new bullets only), next free label, Legend, Legend options |
 | Selected bullet | Color, Edit explanation, Legend, Duplicate, Delete |
 | Legend | Legend (hide), Size, Font, Width, Height (Fit text or Fixed), Place |
 | An explanation being edited | Legend, Size, Font, Width, Height, Place, Save, Cancel |
-| Text box | Border colour, Font size, Background |
+| Text box | Border colour, text colour, font, size, bold, italic, underline, alignment and Background |
 | A selected mark | its type's controls, plus Duplicate and Delete |
 | Pointer (selected, or being placed) | Follow / Following, Place…, Remove from export |
 | A reload-recovery draft is waiting | Draft from *time* (*n* marks), Restore…, Discard — shown beside any of the above |
 
-With a drawing tool active the row reads **New rectangles** (for example) and
-changes only what the next marks look like. With **Select** active it reads
+With a drawing tool active the row begins with the passive label **Defaults:**
+and changes only what the next marks look like. Its accessible name identifies
+the active type, such as “Style for new rectangles.” With **Select** active it reads
 **Selected rectangle** and changes only that mark, as one undo step. Drawing a
-mark does not leave it selected, so adjusting a preset never restyles the mark
-just drawn. Fill opacity swatches show real transparency over a checkerboard;
-tints under **More colors** are solid colours, not see-through fills. A shape
-can never lose both its outline and its fill. Switching to **Outline** remembers
-the shape's fill colour and exact opacity; switching back restores them, even
-after saving and importing JSON. Editing a selected shape leaves future drawing
-defaults alone.
+mark does not leave it selected, so adjusting a default never restyles the mark
+just drawn. Closed shapes have exactly two paint controls: **Outline** and
+**Fill**. Each opens the colour dialog with a continuous 1–100% opacity slider
+that updates the canvas immediately, without an Apply step;
+the same dialog offers **No Outline** or **No Fill**. A slashed swatch means that
+paint is off. A shape can never lose both paints: removing its last visible paint
+restores the other one. Hidden fill colour and opacity are remembered through
+JSON, undo and redo. Editing a selected shape leaves future drawing defaults alone.
 
 ### Pick a color from the page
 
@@ -111,8 +113,12 @@ cancels sampling so the chosen pixel cannot be taken from a misaligned image.
 | --- | --- |
 | `V P B L A R O N U T E C` | Select, Pen, Highlighter, Line, Arrow, Rectangle, Ellipse, Note, Bullet, Text box, Eraser, Crop |
 | `Enter` on a selected bullet | edit its explanation |
-| Start typing on a selected rectangle | create or replace its attached label directly on the canvas |
-| `Enter` or double-click a selected rectangle | edit its attached label |
+| Start typing on a selected rectangle, ellipse or polygon | edit text directly inside that shape |
+| **Enter** or double-click a selected rectangle, ellipse, polygon or text box | edit its text with a real caret and selection |
+| **Ctrl+B**, **Ctrl+I**, **Ctrl+U** while editing shape text | format the selection, or the next characters when the selection is empty |
+| **V** on a selected pen, highlighter, polyline or polygon | toggle Object Selection and Direct Selection |
+| Ctrl/Cmd-click or double-click a path segment in Direct Selection | insert a vertex |
+| **Delete** / **Backspace** with a vertex selected | delete it (while preserving a valid minimum path) |
 | Arrow keys / Shift+arrows with the pointer selected or being placed | move the pointer 1 / 10 screen pixels |
 | `Enter` or `Esc` while placing the pointer | finish placing |
 | `Delete` with the pointer selected | leave the pointer out of exports (its position is kept) |
@@ -141,27 +147,46 @@ a drag in progress. A new polygon needs three separate points that enclose an
 area; older files with two-point polygons still load.
 
 Selecting a rectangle, ellipse, text box, pen or highlighter stroke, polyline
-or polygon shows a frame with a round handle on every corner and at the middle
-of every edge, plus a rotate knob on a short stem above the top edge, as in
-PowerPoint. The frame, handles and knob turn with the mark, and each handle
-shows a resize pointer for the direction it faces on screen. When a shape sits
-at the top of the page, the knob moves below it. A stroke's frame surrounds
-its ink; a perfectly straight stroke has no height to stretch, so it omits the
-two handles that would only do that. Straight lines and arrows show a handle on
-each end instead, and bullets and notes stay fixed-size markers that move but
-do not resize or rotate. A rotated text box is edited in place, turned, and
-grows from its own top-left corner. Each resize or rotation is one undo step.
+or polygon starts in **Object Selection**. Its frame has green square handles
+with black outlines at every corner and edge midpoint, a centre move handle,
+and a rotate knob on a short stem, following the PowerPoint model. The frame,
+handles and knob turn with the mark, and each resize handle shows the direction
+it acts on. When a shape sits at the top of the page, the rotate knob moves
+below it. A stroke's frame surrounds its ink; a perfectly straight stroke has
+no height to stretch, so it omits the two handles that would only do that.
+Straight lines and arrows show a handle on each end instead, and bullets and
+notes stay fixed-size markers that move but do not resize or rotate. A rotated
+text box is edited in place, turned, and grows from its own top-left corner.
+Each move, resize or rotation is one undo step.
+
+For a pen, highlighter, polyline or polygon, press **V** or choose **Edit
+points** to enter **Direct Selection**. The path boundary turns orange-yellow
+and its vertices become small white points with thin black outlines. Drag a
+point to move it, Ctrl/Cmd-click or double-click a segment to insert one, and
+press Delete or Backspace to remove the selected point. Arrow keys nudge a
+selected point; Shift moves it ten screen pixels. Press **V** again for Object
+Selection. Every vertex edit is part of Redline's own undo history.
 
 The visible **Eraser** button removes what it touches: an outline-only shape is erased on its
 outline, not by clicking empty space inside it. Dragging the eraser across
 several marks is one undo step.
 
-To label an existing rectangle, select it and start typing. **Enter** or
-double-click also opens its in-place editor. The label is centred and clipped
-inside the rectangle, moves/resizes/rotates with it, and remains part of that
-same annotation in PNG and JSON exports. `Ctrl+Enter` or clicking away saves;
-`Esc` cancels. Saving an empty label removes only the label. Once labelled, its
-font size is available in the rectangle's contextual controls.
+Click a rectangle, ellipse or polygon with **Select** and start typing to turn
+the enclosed area into a text frame; Enter or double-click also opens its
+in-place editor. Text wraps on word and hyphen boundaries against the actual
+interior contour. Polygon text reflows immediately while a vertex moves, and
+all closed-shape text reflows during object resize. The visible caret,
+selection and text use the same indexed layout as the PNG renderer, so the
+saved image does not substitute a rectangular approximation.
+
+Use the strip to set font, size, text colour, bold, italic, underline and
+horizontal or vertical alignment. With a range selected, character formatting
+applies only to that range; otherwise it controls what you type next. The
+native hidden input supplies keyboard, selection, clipboard and IME behaviour,
+while the caret and selection are painted directly in the shape. **Ctrl+Enter**
+or clicking away saves; **Esc** cancels. Saving empty text removes only the
+text. Open pen/highlighter strokes and polylines do not enclose an area, so they
+remain editable paths rather than text frames.
 
 Choose **Text** (or press **T**), click anywhere, and start typing. Text uses
 dark lettering on a 75%-opaque white background. The background expands as you
@@ -438,6 +463,7 @@ marks serialise exactly as before:
 | `fill` | rectangle, ellipse, polygon | fill colour; omitted when it equals `color` |
 | `outline: false` | rectangle, ellipse, polygon | Fill only; ignored unless there is a fill |
 | `savedFill` | rectangle, ellipse, polygon | Optional `{color, opacity}` retained while Outline hides a previously chosen fill; restored when fill is enabled |
+| `opacity` | pen, brush, line, arrow, polyline, polygon, rectangle, ellipse, textbox | line/outline opacity in [0, 1]; omitted at 1 where older documents omitted it |
 | `text`, `fontSize` | rectangle | optional attached, centred label and its size; both are omitted when the label is empty |
 | `rotation` | rectangle, ellipse, textbox, pen, brush, polyline, polygon | clockwise degrees in [0, 360) about the centre of the mark's upright box (its `start`/`end` box, or the extent of its `points`); geometry stays upright and the rotation is applied when drawing; omitted when 0 |
 | `startDecoration`, `endDecoration` | line, arrow, polyline | `none`, `arrow`, `open-circle` or `filled-circle`; omitted when the type's default |
@@ -723,15 +749,15 @@ input: that a page-world observer sees no export link, bytes or payload; that
 text wraps identically in the preview and the PNG (including the `WWW WWW`
 case, blank lines and long words); arrow-key tab and swatch navigation in the
 palette; that tool switches, Browse, Escape and blur cancel unfinished paths and
-strokes; bar fit and visible essential actions at 1920, 1200, 800 and 420 px;
-selection versus default styling with exact undo, redo and import; graduated
-fill opacity in preview and PNG; Shift constraints; every end decoration;
+strokes; bar fit and visible essential actions at the supported 1920 and 1200 px widths;
+selection versus default styling with exact undo, redo and import; continuous
+fill and outline opacity plus graduated rendering in preview and PNG; Shift constraints; every end decoration;
 duplicate and nudge history; eraser geometry; and rendered text contrast.
 
-The lead-review suite also checks that hidden fills survive treatment changes,
+The lead-review suite also checks that hidden fills survive No Fill/No Outline changes,
 JSON, reopen and history; selected shapes cannot change remembered drawing
 defaults; status toasts stay out of captured PNGs; and both endpoint selectors
-remain visible and operable at 420 px. The text suite checks click-to-type,
+remain reachable and operable at the supported 1200 px minimum. The text suite checks click-to-type,
 translucent white paper, live expansion, later edits, PNG and JSON at DPR 1 and 2.
 
 The Phase 2 suite runs at DPR 2 and again at DPR 1 and checks, through real
@@ -777,7 +803,7 @@ and report text and saying nothing was copied; a real second tab in the same
 window with capture refused from a background tab, when another tab is
 activated mid-capture, when the tab switches away and back mid-capture, and on
 navigation mid-capture (the worker's capture is delayed from the test to make
-these deterministic); a refused preview; 1920, 1200, 800 and 420 px layouts of
+these deterministic); a refused preview; supported 1920 and 1200 px layouts of
 the command strip, Pointer row and preview at both ratios; page-world
 observers, page storage, the stored draft's contents and the shipped manifest.
 Screenshots go to `test-artifacts/phase3`.

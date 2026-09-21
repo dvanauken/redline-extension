@@ -22,8 +22,9 @@ import {
   LEGEND_FIELDS, isBulletLabel, legendToJSON, sanitizeExplanation, sanitizeLegend,
 } from './RedlineLegend.js';
 import {
-  CLOSED_TYPES, DECORATIONS, FRAMED_TYPES, LINE_TYPES, normalizeLineEnds, defaultDecorations,
+  CLOSED_TYPES, DECORATIONS, FRAMED_TYPES, LINE_TYPES, STROKE_OPACITY_TYPES, normalizeLineEnds, defaultDecorations,
 } from './RedlineStyles.js';
+import { sanitizeTextFields } from './RedlineShapeText.js';
 
 const VALID_TYPES = new Set([
   'pen', 'arrow', 'rectangle', 'note', 'textbox', 'ellipse', 'bullet', 'brush', 'line', 'polyline', 'polygon',
@@ -35,18 +36,22 @@ export const HISTORY_LIMIT = 200;
 const BASE_FIELDS = ['id', 'type', 'color', 'width', 'intent'];
 const FILL_FIELDS = ['fill', 'fillOpacity', 'outline', 'savedFill'];
 const DECORATION_FIELDS = ['startDecoration', 'endDecoration'];
+const TEXT_FIELDS = [
+  'text', 'fontSize', 'fontFamily', 'textColor', 'bold', 'italic', 'underline',
+  'textAlign', 'verticalAlign', 'textRuns',
+];
 const TYPE_FIELDS = {
   pen: ['points', 'opacity', 'rotation'],
   brush: ['points', 'opacity', 'rotation'],
   polyline: ['points', 'opacity', 'rotation', ...DECORATION_FIELDS],
-  polygon: ['points', 'opacity', 'rotation', ...FILL_FIELDS],
-  line: ['start', 'end', ...DECORATION_FIELDS],
-  arrow: ['start', 'end', ...DECORATION_FIELDS],
-  rectangle: ['start', 'end', 'rotation', 'text', 'fontSize', ...FILL_FIELDS],
-  ellipse: ['start', 'end', 'rotation', ...FILL_FIELDS],
+  polygon: ['points', 'opacity', 'rotation', ...FILL_FIELDS, ...TEXT_FIELDS],
+  line: ['start', 'end', 'opacity', ...DECORATION_FIELDS],
+  arrow: ['start', 'end', 'opacity', ...DECORATION_FIELDS],
+  rectangle: ['start', 'end', 'rotation', 'opacity', ...FILL_FIELDS, ...TEXT_FIELDS],
+  ellipse: ['start', 'end', 'rotation', 'opacity', ...FILL_FIELDS, ...TEXT_FIELDS],
   note: ['point', 'text', 'number', 'marker'],
   bullet: ['point', 'label', 'text'],
-  textbox: ['start', 'end', 'text', 'fontSize', 'backgroundOpacity', 'rotation'],
+  textbox: ['start', 'end', 'backgroundOpacity', 'rotation', 'opacity', ...TEXT_FIELDS],
 };
 const DOCUMENT_FIELDS = ['width', 'height', 'annotations', 'crop', 'outputScale', 'legend', 'cursor'];
 
@@ -128,6 +133,12 @@ export function sanitizeAnnotation(annotation) {
   // omit the field, so they serialise exactly as before.
   const rotation = FRAMED_TYPES.has(type) ? sanitizeRotation(annotation.rotation) : 0;
   const rotationFields = rotation ? { rotation } : {};
+  const strokeOpacity = STROKE_OPACITY_TYPES.has(type)
+    ? Math.min(1, Math.max(0, finiteNumber(annotation.opacity, type === 'brush' ? 0.35 : 1)))
+    : 1;
+  const opacityFields = STROKE_OPACITY_TYPES.has(type) && annotation.opacity !== undefined && strokeOpacity !== 1
+    ? { opacity: strokeOpacity }
+    : {};
 
   // `fill` defaults to the stroke colour, which is what lets one swatch set
   // stroke and fill together. Painted fill fields remain absent on outlines;
@@ -159,7 +170,11 @@ export function sanitizeAnnotation(annotation) {
       : [];
     if (points.length < 2) throw new TypeError('A path annotation requires at least two points.');
     const opacity = Math.min(1, Math.max(0, finiteNumber(annotation.opacity, type === 'brush' ? 0.35 : 1)));
-    return { ...base, points, opacity, ...decorationFields, ...rotationFields };
+    const text = type === 'polygon' ? String(annotation.text ?? '').replace(/\r\n?/g, '\n').trim() : '';
+    return {
+      ...base, points, opacity, ...decorationFields, ...rotationFields,
+      ...(type === 'polygon' ? sanitizeTextFields(annotation, text) : {}),
+    };
   }
 
   if (type === 'bullet') {
@@ -193,25 +208,28 @@ export function sanitizeAnnotation(annotation) {
   if (type === 'textbox') {
     const start = sanitizePoint(annotation.start);
     const end = sanitizePoint(annotation.end);
+    const text = String(annotation.text ?? '').replace(/\r\n?/g, '\n').trim();
     return {
       ...base,
       start: { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y) },
       end: { x: Math.max(start.x, end.x), y: Math.max(start.y, end.y) },
-      text: String(annotation.text ?? '').trim(),
-      fontSize: Math.max(10, finiteNumber(annotation.fontSize, 16)),
+      text,
+      ...sanitizeTextFields(annotation, text),
       backgroundOpacity: Math.min(1, Math.max(0, finiteNumber(annotation.backgroundOpacity, 0.75))),
+      ...opacityFields,
       ...rotationFields,
     };
   }
 
-  const rectangleText = type === 'rectangle' ? String(annotation.text ?? '').trim() : '';
+  const shapeText = CLOSED_TYPES.has(type) ? String(annotation.text ?? '').replace(/\r\n?/g, '\n').trim() : '';
   return {
     ...base,
     start: sanitizePoint(annotation.start),
     end: sanitizePoint(annotation.end),
     ...decorationFields,
+    ...opacityFields,
     ...rotationFields,
-    ...(rectangleText ? { text: rectangleText, fontSize: Math.max(10, finiteNumber(annotation.fontSize, 16)) } : {}),
+    ...sanitizeTextFields(annotation, shapeText, { legacyRectangle: type === 'rectangle' }),
   };
 }
 

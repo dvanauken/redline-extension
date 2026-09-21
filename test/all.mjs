@@ -24,6 +24,7 @@ const suites = [
   ['phase 1 lead review', process.execPath, [path.join(HERE, 'phase1-review-browser.mjs'), ...passthrough]],
   ['click-to-type browser', process.execPath, [path.join(HERE, 'text-browser.mjs'), ...passthrough]],
   ['rectangle direct-label browser', process.execPath, [path.join(HERE, 'rectangle-label-browser.mjs'), ...passthrough]],
+  ['shape text and direct selection browser', process.execPath, [path.join(HERE, 'shape-edit-browser.mjs'), ...passthrough]],
   ['phase 2 bullets and legend browser', process.execPath, [path.join(HERE, 'phase2-browser.mjs'), ...passthrough]],
   ['phase 2 lead review', process.execPath, [path.join(HERE, 'phase2-review-browser.mjs'), ...passthrough]],
   ['phase 3 pointer, report, preview and capture browser', process.execPath, [path.join(HERE, 'phase3-browser.mjs'), ...passthrough]],

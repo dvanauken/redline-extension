@@ -9,7 +9,10 @@
 
 import { markBounds, markPrimitives } from './RedlineGeometry.js';
 import { REDLINE_FONT_FAMILY } from './RedlineTextLayout.js';
-import { HANDLE_RADIUS, ROTATE_KNOB_RADIUS, selectionFrame, selectionHandles } from './RedlineTransform.js';
+import { caretGeometry, layoutShapeText, selectionGeometry } from './RedlineShapeText.js';
+import {
+  DIRECT_POINT_RADIUS, HANDLE_RADIUS, ROTATE_KNOB_RADIUS, directSelectionPoints, selectionFrame, selectionHandles,
+} from './RedlineTransform.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Lucide's rotate-cw arrow (ISC licence), drawn inside the rotate knob. */
@@ -79,9 +82,25 @@ function primitiveNode(primitive) {
       'text-anchor': primitive.anchor === 'middle' ? 'middle' : 'start',
     });
     for (const line of primitive.lines) {
-      const span = svgElement('tspan', { x: line.x, y: line.y });
-      span.textContent = line.text;
-      text.appendChild(span);
+      if (line.runs?.length) {
+        for (const run of line.runs) {
+          const span = svgElement('tspan', {
+            x: run.x, y: run.y,
+            'font-family': run.style.family,
+            'font-size': run.style.size,
+            'font-weight': run.style.bold ? 700 : 400,
+            'font-style': run.style.italic ? 'italic' : 'normal',
+            'text-decoration': run.style.underline ? 'underline' : undefined,
+            fill: run.style.color,
+          });
+          span.textContent = run.text;
+          text.appendChild(span);
+        }
+      } else {
+        const span = svgElement('tspan', { x: line.x, y: line.y });
+        span.textContent = line.text;
+        text.appendChild(span);
+      }
     }
     if (!primitive.clip) return text;
     // A nested viewport clips without needing a document-unique clipPath id.
@@ -116,8 +135,9 @@ export class RedlineSvgLayer {
     this.svg = svg;
     this.measurer = measurer;
     this.marks = svgElement('g', { 'data-redline-marks': '' });
+    this.textEditing = svgElement('g', { 'data-redline-text-editing-layer': '' });
     this.selection = svgElement('g', { 'data-redline-selection-layer': '' });
-    svg.append(this.marks, this.selection);
+    svg.append(this.marks, this.textEditing, this.selection);
     this._cache = new WeakMap();
   }
 
@@ -140,6 +160,27 @@ export class RedlineSvgLayer {
     while (current.length > nodes.length) current[current.length - 1].remove();
   }
 
+  /** Draw the native text selection/caret over a shape-aware text layout. */
+  renderTextEditing(mark, { start = 0, end = start, focused = true } = {}) {
+    this.textEditing.replaceChildren();
+    if (!mark) return;
+    const layout = layoutShapeText(mark, this.measurer);
+    const group = svgElement('g', { 'data-redline-rich-text-selection': '' });
+    const frame = selectionFrame(mark);
+    if (frame?.rotation) group.setAttribute('transform', `rotate(${frame.rotation} ${frame.center.x} ${frame.center.y})`);
+    for (const rect of selectionGeometry(layout, mark, start, end, this.measurer)) {
+      group.appendChild(svgElement('rect', { ...rect, 'data-redline-text-selection': '' }));
+    }
+    if (focused && start === end) {
+      const caret = caretGeometry(layout, mark, end, this.measurer);
+      if (caret) group.appendChild(svgElement('line', {
+        x1: caret.x, y1: caret.y, x2: caret.x, y2: caret.y + caret.height,
+        'data-redline-text-caret': '', 'vector-effect': 'non-scaling-stroke',
+      }));
+    }
+    this.textEditing.appendChild(group);
+  }
+
   /**
    * Selection chrome in its own layer, so selecting never rebuilds a mark.
    *
@@ -149,9 +190,32 @@ export class RedlineSvgLayer {
    * units to screen pixels, so the chrome keeps a constant on-screen size, and
    * `bounds` keeps the knob on the drawing surface.
    */
-  renderSelection(mark, { scale = { x: 1, y: 1 }, handles = false, bounds = null } = {}) {
+  renderSelection(mark, {
+    scale = { x: 1, y: 1 }, handles = false, bounds = null, mode = 'object', selectedVertex = null,
+  } = {}) {
     this.selection.replaceChildren();
     if (!mark) return;
+    if (mode === 'direct') {
+      const vertices = directSelectionPoints(mark);
+      if (!vertices.length) return;
+      this.selection.appendChild(svgElement(mark.type === 'polygon' ? 'polygon' : 'polyline', {
+        points: pointList(vertices),
+        'data-redline-direct-boundary': '',
+        'data-redline-selection-for': mark.id,
+        'vector-effect': 'non-scaling-stroke',
+      }));
+      const at = ({ x, y }) => `translate(${x} ${y}) scale(${1 / scale.x} ${1 / scale.y})`;
+      for (const vertex of vertices) {
+        this.selection.appendChild(svgElement('circle', {
+          r: DIRECT_POINT_RADIUS,
+          transform: at(vertex),
+          'data-redline-direct-point': vertex.index,
+          'data-selected': vertex.index === selectedVertex ? '' : undefined,
+          'vector-effect': 'non-scaling-stroke',
+        }));
+      }
+      return;
+    }
     const frame = selectionFrame(mark);
     if (frame) {
       const { box, center, rotation } = frame;
@@ -193,8 +257,14 @@ export class RedlineSvgLayer {
         knob.append(svgElement('circle', { r: ROTATE_KNOB_RADIUS }), icon);
         this.selection.appendChild(knob);
       } else {
-        const node = svgElement('g', { 'data-redline-resize': handle.name, transform: at(handle) });
-        node.appendChild(svgElement('circle', { r: HANDLE_RADIUS }));
+        const node = svgElement('g', {
+          'data-redline-resize': handle.name,
+          ...(handle.name === 'center' ? { 'data-redline-move-handle': '' } : {}),
+          transform: at(handle),
+        });
+        node.appendChild(svgElement('rect', {
+          x: -HANDLE_RADIUS, y: -HANDLE_RADIUS, width: HANDLE_RADIUS * 2, height: HANDLE_RADIUS * 2,
+        }));
         this.selection.appendChild(node);
       }
     }

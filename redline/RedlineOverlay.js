@@ -9,7 +9,7 @@ import {
   blobToDataUrl, canvasToBlob, captureBaseImage, clipboardSupport, composeAnnotatedCanvas,
   composeFullPageAnnotatedCanvas, downloadBlob, timestampName,
 } from './RedlineExport.js';
-import { markPrimitives, topmostMarkAt } from './RedlineGeometry.js';
+import { hitTestMark, markPrimitives, topmostMarkAt } from './RedlineGeometry.js';
 import { RedlineGestures } from './RedlineGestures.js';
 import { prepareLegendLayout } from './RedlineCanvas.js';
 import {
@@ -22,13 +22,17 @@ import { DraftAutosaver, buildDraft, describeDraft, draftHasContent, readDraft }
 import { buildReport, reportCounts } from './RedlineReport.js';
 import {
   applyStyleChange, CLOSED_TYPES, DEFAULT_COLOR, DEFAULT_FILL_OPACITY, DECORATIONS, LINE_TYPES, PT_TO_CSS_PX,
-  isHexColor, markDecorations, redlineMarkFill, treatmentOf,
+  STROKE_OPACITY_TYPES, isHexColor, markDecorations, redlineMarkFill, redlineMarkStroked,
 } from './RedlineStyles.js';
 import { RedlineSvgLayer, renderPrimitives, svgElement } from './RedlineSvg.js';
 import { RedlineTextEditor } from './RedlineTextEditor.js';
 import { createCanvasMeasurer, fitTextBoxHeight } from './RedlineTextLayout.js';
+import { SHAPE_TEXT_TYPES, TEXT_CONTAINER_TYPES } from './RedlineShapeText.js';
 import { RedlineToolbar, TOOL_INFO } from './RedlineToolbar.js';
-import { handleCursor, keepCornerInPlace } from './RedlineTransform.js';
+import {
+  DIRECT_SELECTION_TYPES, directPointAt, directSegmentAt, directSelectionPoints, handleCursor, insertDirectPoint,
+  keepCornerInPlace, moveDirectPoint, removeDirectPoint,
+} from './RedlineTransform.js';
 import './vendor/wb/wb-color-picker/wb-color-picker.define.js';
 
 /** Tools that create marks, and so have drawing defaults to style. */
@@ -144,9 +148,17 @@ export class RedlineOverlay {
       fillOpacity: 0,
       outline: true,
       lastFillOpacity: DEFAULT_FILL_OPACITY,
+      strokeOpacity: 1,
       brushWidth: 10,
       brushOpacity: 0.35,
       fontSize: 16,
+      fontFamily: 'Arial, "Helvetica Neue", Helvetica, "Liberation Sans", sans-serif',
+      textColor: '#292D32',
+      bold: false,
+      italic: false,
+      underline: false,
+      textAlign: 'center',
+      verticalAlign: 'middle',
       textBoxBackgroundOpacity: 0.75,
       noteMarker: 'numeric',
       bulletScheme: 'numeric',
@@ -159,6 +171,9 @@ export class RedlineOverlay {
       },
     };
     this.selectedId = null;
+    /** Object mode transforms the whole mark; direct mode edits path vertices. */
+    this.selectionMode = 'object';
+    this.selectedVertex = null;
     /** The legend itself is selected: its frame, grip and handles show. */
     this.legendSelected = false;
     /** Why the last bullet could not be placed, until labels or scheme change. */
@@ -169,6 +184,9 @@ export class RedlineOverlay {
     this._previousFocus = null;
     this._dialogDepth = 0;
     this._colorDialogResolve = null;
+    this._colorDialogTarget = null;
+    this._colorOpacityMergeKey = null;
+    this._colorOpacityDefaultsDirty = false;
     this.toolbarPinned = false;
     this.toolbarPosition = null;
     this._toolbarDrag = null;
@@ -428,6 +446,10 @@ export class RedlineOverlay {
       // Styling controls follow the tool: a drawing tool edits its defaults, so
       // a mark left selected must not be edited by them.
       if (tool !== 'select') this.selectedId = null;
+      if (tool !== 'select') {
+        this.selectionMode = 'object';
+        this.selectedVertex = null;
+      }
       this.legendSelected = false;
       this.cursorSelected = false;
       this.cursorPlacing = false;
@@ -533,7 +555,16 @@ export class RedlineOverlay {
     this._nudge.id = mark.id;
     this._nudge.at = now;
     const scale = this._scale();
-    this.document.replace(mark.id, translateAnnotation(mark, dx / scale.x, dy / scale.y), {
+    let next;
+    if (this.selectionMode === 'direct' && this.selectedVertex !== null && DIRECT_SELECTION_TYPES.has(mark.type)) {
+      const vertex = directSelectionPoints(mark)[this.selectedVertex];
+      next = moveDirectPoint(mark, this.selectedVertex, vertex, {
+        x: vertex.x + dx / scale.x, y: vertex.y + dy / scale.y,
+      });
+    } else {
+      next = translateAnnotation(mark, dx / scale.x, dy / scale.y);
+    }
+    this.document.replace(mark.id, next, {
       mergeKey: `nudge:${mark.id}:${this._nudge.run}`,
     });
     this._render();
@@ -980,6 +1011,8 @@ export class RedlineOverlay {
       getDocument: () => this.document,
       onFinish: result => this._onTextEditFinished(result),
       onInput: () => this._autosave?.schedule(),
+      onChange: () => this._render({ force: true }),
+      keepsEditing: () => this._dialogDepth > 0,
     });
 
     this.importInput = document.createElement('input');
@@ -1018,7 +1051,7 @@ export class RedlineOverlay {
       if (!path.some(node => node?.dataset && ('redlineMenu' in node.dataset || 'redlineMoreTools' in node.dataset || 'redlineMoreActions' in node.dataset))) {
         this.toolbarUI.closeMenus();
       }
-      if (!this.textEditor.active || path.some(node => this.textEditor.contains(node))) return;
+      if (!this.textEditor.active || path.includes(this.svg) || path.some(node => this.textEditor.contains(node))) return;
       this.textEditor.finish({ commit: true });
     }, true);
     this.grip.addEventListener('pointerdown', event => this._onToolbarPointerDown(event));
@@ -1041,6 +1074,8 @@ export class RedlineOverlay {
       get document() { return overlay.document; },
       get tool() { return overlay.tool; },
       get selectedId() { return overlay.selectedId; },
+      get selectionMode() { return overlay.selectionMode; },
+      get selectedVertex() { return overlay.selectedVertex; },
       get legendEditor() { return overlay.legendEditor; },
       measurer: this.measurer,
       scale: () => this._scale(),
@@ -1054,7 +1089,13 @@ export class RedlineOverlay {
       },
       editExplanation: (id, options) => this.editExplanation(id, options),
       styleFor: tool => this._styleFor(tool),
-      select: id => { this.selectedId = id; },
+      select: id => {
+        if (this.selectedId !== id) this.selectedVertex = null;
+        this.selectedId = id;
+      },
+      selectVertex: index => { this.selectedVertex = index; },
+      setSelectionMode: mode => this.setSelectionMode(mode),
+      insertVertex: point => this.insertSelectedVertex(point),
       render: () => this._render(),
       setMessage: text => this._setMessage(text),
       commitPath: mark => {
@@ -1089,6 +1130,7 @@ export class RedlineOverlay {
     if (name === 'tool') return this.setTool(detail);
     if (name === 'mode') return this.setPageMode(detail === 'browse');
     if (name === 'style') return this._applyStyle(detail);
+    if (name === 'selectionMode') return this.setSelectionMode(detail);
     if (name === 'color') return this._chooseColor(detail.target, detail.anchor).catch(error => this._reportError(error));
     if (name === 'noteMarker') {
       this.defaults.noteMarker = detail === 'alpha' ? 'alpha' : 'numeric';
@@ -1151,6 +1193,37 @@ export class RedlineOverlay {
     this.colorHeading.id = 'redline-color-heading';
     this.colorHeading.dataset.redlineColorHeading = '';
     this.colorDialog.appendChild(this.colorHeading);
+
+    this.colorOptions = document.createElement('div');
+    this.colorOptions.dataset.redlineColorOptions = '';
+    this.colorNoPaintButton = document.createElement('button');
+    this.colorNoPaintButton.type = 'button';
+    this.colorNoPaintButton.dataset.redlineNoPaint = '';
+    this.colorNoPaintButton.addEventListener('click', () => this._settleColorDialog({ none: true }));
+    this.colorOpacityLabel = document.createElement('label');
+    this.colorOpacityLabel.textContent = 'Opacity';
+    this.colorOpacityLabel.htmlFor = 'redline-color-opacity';
+    this.colorOpacity = document.createElement('input');
+    this.colorOpacity.id = 'redline-color-opacity';
+    this.colorOpacity.type = 'range';
+    this.colorOpacity.min = '1';
+    this.colorOpacity.max = '100';
+    this.colorOpacity.step = '1';
+    this.colorOpacity.setAttribute('aria-label', 'Opacity');
+    this.colorOpacityOutput = document.createElement('output');
+    this.colorOpacityOutput.htmlFor = this.colorOpacity.id;
+    this.colorOpacityOutput.dataset.redlineColorOpacityOutput = '';
+    this.colorOpacity.addEventListener('input', () => {
+      this.colorOpacityOutput.value = `${this.colorOpacity.value}%`;
+      this.colorOpacity.setAttribute('aria-valuetext', `${this.colorOpacity.value}% opacity`);
+      if (this.colorDialog.open) this._applyDialogOpacity();
+    });
+    this.colorOptions.append(
+      this.colorNoPaintButton, this.colorOpacityLabel, this.colorOpacity,
+      this.colorOpacityOutput,
+    );
+    this.colorDialog.appendChild(this.colorOptions);
+
     this.eyedropperButton = document.createElement('button');
     this.eyedropperButton.type = 'button';
     this.eyedropperButton.dataset.redlineEyedropperButton = '';
@@ -1166,13 +1239,19 @@ export class RedlineOverlay {
     this.colorPicker.setAttribute('aria-label', 'Annotation color picker');
     this.colorPicker.addEventListener('wb-change', event => {
       if (!event.detail?.color || !this.colorDialog.open) return;
-      this._settleColorDialog(this._styleFromPick(event.detail));
+      this._settleColorDialog({
+        ...this._styleFromPick(event.detail),
+        opacity: Number(this.colorOpacity.value) / 100,
+      });
     });
     this.colorPicker.addEventListener('click', event => {
       if (!this.colorDialog.open) return;
       const swatch = event.composedPath().find(node => node instanceof Element && node.matches?.('[data-color]'));
       if (!swatch?.dataset.color) return;
-      this._settleColorDialog(this._styleFromPick(swatch.dataset));
+      this._settleColorDialog({
+        ...this._styleFromPick(swatch.dataset),
+        opacity: Number(this.colorOpacity.value) / 100,
+      });
     });
     this.colorDialog.appendChild(this.colorPicker);
     // [extension patch] keep the color dialog inside the same (shadow) mount as the root.
@@ -1202,6 +1281,8 @@ export class RedlineOverlay {
    */
   _settleColorDialog(style) {
     this.eyedropper?.cancel();
+    if (this._colorOpacityDefaultsDirty) this._savePreferences();
+    this._colorOpacityDefaultsDirty = false;
     const resolve = this._colorDialogResolve;
     this._colorDialogResolve = null;
     if (this.colorDialog.open) this.colorDialog.close(style ? 'apply' : 'cancel');
@@ -1221,7 +1302,7 @@ export class RedlineOverlay {
       const color = await this._withChildDialog(() => this.eyedropper.pick());
       if (!this.active || lifecycle !== this._lifecycleToken || request !== this._colorDialogResolve) return;
       if (color) {
-        this._settleColorDialog({ color, intent: null });
+        this._settleColorDialog({ color, intent: null, opacity: Number(this.colorOpacity.value) / 100 });
         this._setMessage('Picked ' + color + ' from the page');
       }
     } catch (error) {
@@ -1261,6 +1342,14 @@ export class RedlineOverlay {
   _subject() {
     if (!this.document) return { kind: 'none' };
     const legend = this.document.legend;
+    if (this.textEditor.active) {
+      const mark = this.textEditor.mark;
+      return {
+        kind: 'selection', type: mark.type, mark,
+        style: { ...mark, ...this.textEditor.currentStyle() }, legend,
+        hint: 'Editing text · drag to select · formatting applies to the selection · Ctrl+Enter saves · Esc cancels',
+      };
+    }
     if (this.legendEditor.active) {
       const bullet = this.document.find(this.legendEditor.editingId);
       return {
@@ -1328,6 +1417,8 @@ export class RedlineOverlay {
     if (tool === 'brush') {
       style.width = d.brushWidth;
       style.opacity = d.brushOpacity;
+    } else if (STROKE_OPACITY_TYPES.has(tool) && d.strokeOpacity !== 1) {
+      style.opacity = d.strokeOpacity;
     }
     if (LINE_TYPES.has(tool)) {
       const ends = d.ends[tool];
@@ -1336,7 +1427,23 @@ export class RedlineOverlay {
     }
     if (tool === 'textbox') {
       style.fontSize = d.fontSize;
+      style.fontFamily = d.fontFamily;
+      style.textColor = d.textColor;
+      style.bold = d.bold;
+      style.italic = d.italic;
+      style.underline = d.underline;
+      style.textAlign = 'left';
+      style.verticalAlign = 'top';
       style.backgroundOpacity = d.textBoxBackgroundOpacity;
+    } else if (CLOSED_TYPES.has(tool)) {
+      style.fontSize = d.fontSize;
+      style.fontFamily = d.fontFamily;
+      style.textColor = d.textColor;
+      style.bold = tool === 'rectangle' ? true : d.bold;
+      style.italic = d.italic;
+      style.underline = d.underline;
+      style.textAlign = d.textAlign;
+      style.verticalAlign = d.verticalAlign;
     }
     return style;
   }
@@ -1350,6 +1457,7 @@ export class RedlineOverlay {
       d.brushOpacity = style.opacity ?? d.brushOpacity;
     } else {
       d.width = style.width;
+      if (STROKE_OPACITY_TYPES.has(tool)) d.strokeOpacity = style.opacity ?? 1;
     }
     if (CLOSED_TYPES.has(tool)) {
       const fill = redlineMarkFill(style);
@@ -1364,15 +1472,30 @@ export class RedlineOverlay {
     // A straight line may have been renamed arrow (or back) by its ends; the
     // decorations are what the tool remembers.
     if (LINE_TYPES.has(tool)) d.ends[tool] = markDecorations(style);
-    if (tool === 'textbox') {
+    if (tool === 'textbox' || CLOSED_TYPES.has(tool)) {
       d.fontSize = style.fontSize ?? d.fontSize;
+      d.fontFamily = style.fontFamily ?? d.fontFamily;
+      d.textColor = style.textColor ?? d.textColor;
+      d.bold = style.bold ?? d.bold;
+      d.italic = style.italic ?? d.italic;
+      d.underline = style.underline ?? d.underline;
+      d.textAlign = style.textAlign ?? d.textAlign;
+      d.verticalAlign = style.verticalAlign ?? d.verticalAlign;
+    }
+    if (tool === 'textbox') {
       d.textBoxBackgroundOpacity = style.backgroundOpacity ?? d.textBoxBackgroundOpacity;
     }
     this._defaultsVersion += 1;
   }
 
   /** Apply one style edit to exactly one target: the selection or the defaults. */
-  _applyStyle(change) {
+  _applyStyle(change, { mergeKey = null, savePreferences = true } = {}) {
+    const textProperties = new Set(['fontSize', 'fontFamily', 'textColor', 'bold', 'italic', 'underline', 'textAlign', 'verticalAlign']);
+    if (this.textEditor.active && textProperties.has(change.property)) {
+      const changed = this.textEditor.applyFormat(change.property, change.value);
+      if (changed) this._render({ force: true });
+      return changed;
+    }
     const subject = this._subject();
     const value = change.property === 'treatment'
       ? { treatment: change.value, fillOpacity: this.defaults.lastFillOpacity }
@@ -1382,7 +1505,7 @@ export class RedlineOverlay {
       let next = applyStyleChange(subject.mark, edit);
       if (next === subject.mark) return false;
       if (next.type === 'textbox') next = keepCornerInPlace(next, fitTextBoxHeight(next, this.measurer));
-      this.document.replace(subject.mark.id, next);
+      this.document.replace(subject.mark.id, next, { mergeKey });
       this._render();
       return true;
     }
@@ -1392,7 +1515,7 @@ export class RedlineOverlay {
       this._storeDefaults(subject.type, next);
       // A path being drawn picks up the new style for its remaining clicks.
       if (this.gestures.draft?.type === subject.type) Object.assign(this.gestures.draft, this._styleFor(subject.type));
-      this._savePreferences();
+      if (savePreferences) this._savePreferences();
       this._render();
       return true;
     }
@@ -1409,15 +1532,36 @@ export class RedlineOverlay {
     const style = subject.style;
     const closed = CLOSED_TYPES.has(style.type);
     const fill = redlineMarkFill(style);
-    const initial = target === 'fill' ? (fill?.color ?? style.fill ?? style.color) : style.color;
+    const initial = target === 'text' ? (style.textColor ?? '#292D32')
+      : target === 'fill' ? (fill?.color ?? style.fill ?? style.color) : style.color;
     const name = TYPE_NAMES[subject.type] ?? 'mark';
-    const role = target === 'fill' ? 'Fill' : closed ? 'Outline' : style.type === 'textbox' ? 'Border' : 'Color';
+    const role = target === 'text' ? 'Text' : target === 'fill' ? 'Fill' : closed ? 'Outline' : style.type === 'textbox' ? 'Border' : 'Color';
     this.colorHeading.textContent = `${role}${role === 'Color' ? '' : ' color'} · ${subject.kind === 'selection' ? `selected ${name}` : `new ${name}s`}`;
     this._colorAnchor = anchor;
     // [extension patch] no registry means no upgrade to wait for.
     if (globalThis.customElements) await customElements.whenDefined('wb-color-picker');
     this.colorPicker.value = initial;
     if ('annotationStyle' in this.colorPicker) this.colorPicker.annotationStyle = { color: initial, intent: style.intent ?? null };
+    const supportsOpacity = target === 'text' ? false : target === 'fill' ? closed : STROKE_OPACITY_TYPES.has(style.type);
+    const opacity = target === 'fill'
+      ? (fill?.opacity ?? style.savedFill?.opacity ?? this.defaults.lastFillOpacity)
+      : (style.opacity ?? (style.type === 'brush' ? this.defaults.brushOpacity : 1));
+    const opacityMergeKey = Symbol(`color-opacity:${target}`);
+    this._colorDialogTarget = target;
+    this._colorOpacityMergeKey = opacityMergeKey;
+    this._colorOpacityDefaultsDirty = false;
+    this.colorOptions.hidden = target === 'text' || (!closed && !supportsOpacity);
+    this.colorNoPaintButton.hidden = target === 'text' || !closed;
+    this.colorNoPaintButton.textContent = target === 'fill' ? 'No Fill' : 'No Outline';
+    this.colorNoPaintButton.title = target === 'fill'
+      ? 'Remove the shape fill'
+      : 'Remove the shape outline';
+    for (const element of [this.colorOpacityLabel, this.colorOpacity, this.colorOpacityOutput]) {
+      element.hidden = !supportsOpacity;
+    }
+    this.colorOpacity.value = String(Math.max(1, Math.round(opacity * 100)));
+    this.colorOpacityOutput.value = `${this.colorOpacity.value}%`;
+    this.colorOpacity.setAttribute('aria-valuetext', `${this.colorOpacity.value}% opacity`);
     this.colorDialog.returnValue = 'cancel';
 
     const picked = await this._withChildDialog(() => new Promise(resolve => {
@@ -1428,13 +1572,56 @@ export class RedlineOverlay {
     }));
     this._colorAnchor?.focus?.({ preventScroll: true });
     if (!picked || !this.active) return false;
+    if (picked.none && closed) {
+      return this._applyStyle(
+        { property: 'treatment', value: target === 'fill' ? 'outline' : 'fill' },
+        { mergeKey: opacityMergeKey },
+      );
+    }
+    if (!picked.color) return false;
+    if (target === 'text') return this._applyStyle({ property: 'textColor', value: picked.color });
     // The pick names the mark's meaning only when it sets the colour people see
     // first: the outline, or the fill of a fill-only shape.
-    const primary = target === 'fill' ? treatmentOf(style) === 'fill' : !(closed && treatmentOf(style) === 'fill');
-    const value = { color: picked.color, fillOpacity: this.defaults.lastFillOpacity };
+    const primary = target === 'fill' ? closed && !redlineMarkStroked(style) : !closed || redlineMarkStroked(style);
+    const value = {
+      color: picked.color,
+      opacity: picked.opacity,
+      fillOpacity: picked.opacity,
+      enable: closed,
+    };
     if (primary && 'intent' in picked) value.intent = picked.intent;
     else if (primary) value.intent = null;
-    return this._applyStyle({ property: target === 'fill' ? 'fillColor' : 'strokeColor', value });
+    return this._applyStyle(
+      { property: target === 'fill' ? 'fillColor' : 'strokeColor', value },
+      { mergeKey: opacityMergeKey },
+    );
+  }
+
+  /** Apply range input immediately, without requiring a colour pick or closing the dialog. */
+  _applyDialogOpacity() {
+    const target = this._colorDialogTarget;
+    const subject = this._subject();
+    if (!target || subject.kind === 'none') return false;
+    const style = subject.style;
+    const closed = CLOSED_TYPES.has(style.type);
+    if (target === 'fill' && !closed) return false;
+    if (target === 'stroke' && !STROKE_OPACITY_TYPES.has(style.type)) return false;
+    const fill = redlineMarkFill(style);
+    const color = target === 'fill'
+      ? (fill?.color ?? style.savedFill?.color ?? style.fill ?? style.color)
+      : style.color;
+    const opacity = Number(this.colorOpacity.value) / 100;
+    const value = target === 'fill'
+      ? { color, fillOpacity: opacity }
+      : { color, opacity, enable: closed };
+    const changed = this._applyStyle(
+      { property: target === 'fill' ? 'fillColor' : 'strokeColor', value },
+      { mergeKey: this._colorOpacityMergeKey, savePreferences: false },
+    );
+    if (changed) {
+      this._colorOpacityDefaultsDirty ||= subject.kind === 'defaults';
+    }
+    return changed;
   }
 
   _positionColorDialog() {
@@ -1488,6 +1675,18 @@ export class RedlineOverlay {
     event.preventDefault();
     this.toolbarUI.closeMenus();
     const point = this._point(event);
+    if (this.textEditor.active) {
+      const editing = this.textEditor.mark;
+      const tolerance = 6 / Math.min(this._scale().x, this._scale().y);
+      if (editing && hitTestMark(editing, point, tolerance, this.measurer)) {
+        this._textPointerId = event.pointerId;
+        this.textEditor.pointerDown(point, { shiftKey: event.shiftKey });
+        this.svg.setPointerCapture?.(event.pointerId);
+        this._render({ force: true });
+        return;
+      }
+      this.textEditor.finish({ commit: true });
+    }
     this._trackSurface(event, true);
     // Placing the pointer takes any press; the proxy itself is above everything.
     const cursor = this.document.cursor;
@@ -1529,12 +1728,24 @@ export class RedlineOverlay {
     if (!this.document || this.pageMode || this._busy) return;
     this._trackSurface(event, false);
     const point = this._point(event);
+    if (this._textPointerId === event.pointerId && this.textEditor.active) {
+      this.textEditor.pointerDrag(point);
+      this._render({ force: true });
+      return;
+    }
     this.gestures.pointerMove(event, point);
     if (!this.gestures.pointer) this._queueHover(point);
   }
 
   _onPointerUp(event, cancelled = false) {
     if (!this.document) return;
+    if (this._textPointerId === event.pointerId) {
+      this._textPointerId = null;
+      this.textEditor.pointerUp();
+      if (this.svg.hasPointerCapture?.(event.pointerId)) this.svg.releasePointerCapture(event.pointerId);
+      this._render({ force: true });
+      return;
+    }
     this.gestures.pointerUp(event, cancelled ? null : this._point(event), { cancelled });
     if (this.svg.hasPointerCapture?.(event.pointerId)) this.svg.releasePointerCapture(event.pointerId);
   }
@@ -1560,9 +1771,13 @@ export class RedlineOverlay {
           : legend.kind === 'row' || legend.kind === 'card' ? 'text' : 'move';
       } else if (this.tool === 'select' || this.tool === 'eraser') {
         const selected = this.selectedId ? doc.find(this.selectedId) : null;
-        const handle = this.tool === 'select' ? this.gestures.handleAt(selected, this._hoverPoint) : null;
+        const direct = this.tool === 'select' && this.selectionMode === 'direct' && DIRECT_SELECTION_TYPES.has(selected?.type);
+        const pointHandle = direct ? directPointAt(selected, this._hoverPoint, { scale }) : null;
+        const segment = direct ? directSegmentAt(selected, this._hoverPoint, { scale }) : null;
+        const handle = this.tool === 'select' && !direct ? this.gestures.handleAt(selected, this._hoverPoint) : null;
         const hit = handle ? null : topmostMarkAt(doc.marks, this._hoverPoint, tolerance, this.measurer);
-        hover = handle ? handleCursor(selected, handle, scale) : hit ? (this.tool === 'eraser' ? 'erase' : 'move') : null;
+        hover = pointHandle !== null ? 'endpoint' : segment ? 'point-insert'
+          : handle ? handleCursor(selected, handle, scale) : hit ? (this.tool === 'eraser' ? 'erase' : direct ? 'default' : 'move') : null;
       } else if (this.tool === 'bullet') {
         const bullets = doc.marks.filter(mark => mark.type === 'bullet');
         hover = topmostMarkAt(bullets, this._hoverPoint, tolerance, this.measurer) ? 'move' : null;
@@ -2172,52 +2387,77 @@ export class RedlineOverlay {
     if (before !== recovery.stored && this.active) this._render({ force: true });
   }
 
-  _onTextEditFinished({ mark, creating, commit, text, geometry }) {
-    if (mark.type === 'rectangle') {
-      if (commit) {
-        const next = { ...mark };
-        if (text) {
-          next.text = text;
-          next.fontSize = mark.fontSize ?? 16;
-        } else {
-          delete next.text;
-          delete next.fontSize;
-        }
-        if ((mark.text ?? '') !== text) this.document.replace(mark.id, next);
-      }
-      this._render();
-      if (!commit) this._setMessage('Rectangle label edit cancelled');
-      else if (text) this._setMessage('Rectangle label saved — select it and start typing to edit');
-      else this._setMessage('Rectangle label removed');
-      return;
-    }
-    const saved = commit && Boolean(text);
+  _onTextEditFinished({ mark, preview, creating, commit, text }) {
+    const saved = commit && (Boolean(text) || (!creating && mark.type === 'textbox'));
     if (saved) {
-      const edited = { ...mark, ...geometry, text };
-      const next = keepCornerInPlace(edited, fitTextBoxHeight(edited, this.measurer));
+      let next = { ...preview, text };
+      if (mark.type === 'textbox') next = keepCornerInPlace(next, fitTextBoxHeight(next, this.measurer));
       if (creating) {
         const added = this.document.add(next);
         this.selectedId = added.id;
-      } else if (text !== mark.text || ['start', 'end'].some(key => next[key].x !== mark[key].x || next[key].y !== mark[key].y)) {
+      } else if (JSON.stringify(next) !== JSON.stringify(mark)) {
         this.document.replace(mark.id, next);
       }
+    } else if (commit && !creating && SHAPE_TEXT_TYPES.has(mark.type)) {
+      const next = { ...mark };
+      for (const field of ['text', 'fontSize', 'fontFamily', 'textColor', 'bold', 'italic', 'underline', 'textAlign', 'verticalAlign', 'textRuns']) delete next[field];
+      this.document.replace(mark.id, next);
     } else if (creating) {
       this.selectedId = null;
     }
     if (saved && creating) this.setTool('select');
     this._render();
-    if (saved) this._setMessage('Text box saved — double-click to edit');
+    if (saved) this._setMessage(`${mark.type === 'textbox' ? 'Text box' : 'Shape text'} saved — double-click to edit`);
     else if (!commit) this._setMessage('Text edit cancelled');
+    else this._setMessage('Shape text removed');
   }
 
   _startDirectTextEdit(mark, { initialText = null } = {}) {
-    if (!mark || !['rectangle', 'textbox'].includes(mark.type) || this.textEditor.active) return false;
+    if (!mark || !TEXT_CONTAINER_TYPES.has(mark.type) || this.textEditor.active) return false;
     this.selectedId = mark.id;
     this.textEditor.start(mark, { initialText });
     this._render();
-    this._setMessage(mark.type === 'rectangle'
-      ? 'Editing rectangle label — type on the canvas; Ctrl+Enter or click away saves; Esc cancels'
-      : 'Editing text — Save, click away, or Ctrl+Enter; Esc cancels');
+    this._setMessage(mark.type === 'textbox'
+      ? 'Editing text — select text to format it; Ctrl+Enter or click away saves; Esc cancels'
+      : `Editing ${mark.type} text — it wraps to the live contour; select text to format it; Ctrl+Enter saves`);
+    return true;
+  }
+
+  setSelectionMode(mode) {
+    const mark = this.selectedId ? this.document?.find(this.selectedId) : null;
+    const direct = mode === 'direct' && DIRECT_SELECTION_TYPES.has(mark?.type);
+    this.selectionMode = direct ? 'direct' : 'object';
+    this.selectedVertex = null;
+    this._render({ force: true });
+    this._setMessage(direct
+      ? 'Direct selection — drag white points · Ctrl+click or double-click a segment to insert · Delete removes a point · V returns to object selection'
+      : 'Object selection — green handles resize · center handle moves · rotation handle turns · V edits points');
+    return direct;
+  }
+
+  insertSelectedVertex(point) {
+    const mark = this.selectedId ? this.document?.find(this.selectedId) : null;
+    if (this.selectionMode !== 'direct' || !mark) return false;
+    const inserted = insertDirectPoint(mark, point, { scale: this._scale() });
+    if (!inserted) return false;
+    this.document.replace(mark.id, inserted.mark);
+    this.selectedVertex = inserted.index;
+    this._render({ force: true });
+    this._setMessage(`Inserted point ${inserted.index + 1} · drag it to refine the contour`);
+    return true;
+  }
+
+  removeSelectedVertex() {
+    const mark = this.selectedId ? this.document?.find(this.selectedId) : null;
+    if (this.selectionMode !== 'direct' || !mark || this.selectedVertex === null) return false;
+    const next = removeDirectPoint(mark, this.selectedVertex);
+    if (!next) {
+      this._setMessage(mark.type === 'polygon' ? 'A polygon must keep at least three points' : 'A path must keep at least two points');
+      return false;
+    }
+    this.document.replace(mark.id, next);
+    this.selectedVertex = Math.min(this.selectedVertex, next.points.length - 1);
+    this._render({ force: true });
     return true;
   }
 
@@ -2229,6 +2469,13 @@ export class RedlineOverlay {
     }
     const point = this._point(event);
     const scale = this._scale();
+    if (this.tool === 'select' && this.selectionMode === 'direct' && this.selectedId) {
+      const selected = this.document.find(this.selectedId);
+      if (directSegmentAt(selected, point, { scale })) {
+        this.insertSelectedVertex(point);
+        return;
+      }
+    }
     // Double-clicks on the legend select words; its pointer handling did that.
     if (this.legendEditor.hitTest(point)) return;
     if (this.tool === 'select' || this.tool === 'bullet') {
@@ -2240,10 +2487,10 @@ export class RedlineOverlay {
       }
     }
     if (this.tool !== 'select') return;
-    const textMarks = this.document.marks.filter(mark => ['note', 'textbox', 'rectangle'].includes(mark.type));
+    const textMarks = this.document.marks.filter(mark => mark.type === 'note' || TEXT_CONTAINER_TYPES.has(mark.type));
     const textMark = topmostMarkAt(textMarks, point, 6 / Math.min(scale.x, scale.y), this.measurer);
     if (!textMark) return;
-    if (textMark.type === 'textbox' || textMark.type === 'rectangle') {
+    if (TEXT_CONTAINER_TYPES.has(textMark.type)) {
       this._startDirectTextEdit(textMark);
       return;
     }
@@ -2284,6 +2531,7 @@ export class RedlineOverlay {
       d.savedFill = { color: saved.savedFill.color, opacity: saved.savedFill.opacity };
     }
     if (unit(saved.lastFillOpacity) && saved.lastFillOpacity > 0) d.lastFillOpacity = saved.lastFillOpacity;
+    if (unit(saved.strokeOpacity)) d.strokeOpacity = saved.strokeOpacity;
     if (saved.outline === false && d.fillOpacity > 0) d.outline = false;
     if (typeof saved.intent === 'string' && saved.intent) d.intent = saved.intent.slice(0, 32);
     if (saved.noteMarker === 'alpha' || saved.noteMarker === 'numeric') d.noteMarker = saved.noteMarker;
@@ -2296,6 +2544,13 @@ export class RedlineOverlay {
     // translucent once, then retain any new opacity the user explicitly chooses.
     if (saved.textBoxAppearance === 'paper' && unit(saved.textBoxBackgroundOpacity)) d.textBoxBackgroundOpacity = saved.textBoxBackgroundOpacity;
     if (Number.isFinite(saved.textBoxFontSize) && saved.textBoxFontSize >= 10 && saved.textBoxFontSize <= 96) d.fontSize = saved.textBoxFontSize;
+    if (typeof saved.textFontFamily === 'string' && saved.textFontFamily.trim()) d.fontFamily = saved.textFontFamily.trim().slice(0, 160);
+    if (isHexColor(saved.textColor)) d.textColor = saved.textColor;
+    if (typeof saved.textBold === 'boolean') d.bold = saved.textBold;
+    if (typeof saved.textItalic === 'boolean') d.italic = saved.textItalic;
+    if (typeof saved.textUnderline === 'boolean') d.underline = saved.textUnderline;
+    if (['left', 'center', 'right'].includes(saved.textAlign)) d.textAlign = saved.textAlign;
+    if (['top', 'middle', 'bottom'].includes(saved.verticalAlign)) d.verticalAlign = saved.verticalAlign;
     for (const tool of ['line', 'arrow', 'polyline']) {
       if (validEnds(saved[`${tool}Ends`])) d.ends[tool] = { start: saved[`${tool}Ends`].start, end: saved[`${tool}Ends`].end };
     }
@@ -2311,10 +2566,12 @@ export class RedlineOverlay {
       tool: this.tool === 'crop' ? this._toolBeforeCrop : this.tool,
       color: d.color, width: d.width, fill: d.fill, fillOpacity: d.fillOpacity, outline: d.outline,
       savedFill: d.savedFill ? { ...d.savedFill } : null,
-      lastFillOpacity: d.lastFillOpacity, intent: d.intent, noteMarker: d.noteMarker,
+      lastFillOpacity: d.lastFillOpacity, strokeOpacity: d.strokeOpacity, intent: d.intent, noteMarker: d.noteMarker,
       bulletScheme: d.bulletScheme, legendVisible: d.legendVisible,
       brushWidth: d.brushWidth, brushOpacity: d.brushOpacity,
       textBoxBackgroundOpacity: d.textBoxBackgroundOpacity, textBoxFontSize: d.fontSize,
+      textFontFamily: d.fontFamily, textColor: d.textColor, textBold: d.bold,
+      textItalic: d.italic, textUnderline: d.underline, textAlign: d.textAlign, verticalAlign: d.verticalAlign,
       textBoxAppearance: 'paper',
       lineEnds: { ...d.ends.line }, arrowEnds: { ...d.ends.arrow }, polylineEnds: { ...d.ends.polyline },
       toolbarPinned: this.toolbarPinned,
@@ -2486,21 +2743,28 @@ export class RedlineOverlay {
     }
     if (editable) return undefined;
     const selectedMark = this.tool === 'select' && this.selectedId ? this.document?.find(this.selectedId) : null;
+    // V is the selection-mode toggle while a point path is selected. Once a
+    // text edit is active the native editor owns V like any other character.
+    if (!ctrl && !event.altKey && !event.shiftKey && key === 'v' && DIRECT_SELECTION_TYPES.has(selectedMark?.type)) {
+      this.setSelectionMode(this.selectionMode === 'direct' ? 'object' : 'direct');
+      return handled();
+    }
     if (event.key === 'Enter' && !ctrl && selectedMark?.type === 'bullet' && !target?.matches?.('button, select, input, textarea, summary')) {
       this.editExplanation(selectedMark.id);
       return handled();
     }
-    if (event.key === 'Enter' && !ctrl && selectedMark?.type === 'rectangle' && target === this.svg) {
+    if (event.key === 'Enter' && !ctrl && TEXT_CONTAINER_TYPES.has(selectedMark?.type) && target === this.svg) {
       this._startDirectTextEdit(selectedMark);
       return handled();
     }
     if (!ctrl && !event.altKey && !event.metaKey && !event.isComposing && event.key.length === 1
-      && selectedMark?.type === 'rectangle' && target === this.svg) {
+      && TEXT_CONTAINER_TYPES.has(selectedMark?.type) && target === this.svg) {
       this._startDirectTextEdit(selectedMark, { initialText: event.key });
       return handled();
     }
     if (!ctrl && (event.key === 'Delete' || event.key === 'Backspace')) {
       if (this.gestures.hasPathDraft) this.gestures.removeLastPathPoint();
+      else if (this.selectionMode === 'direct' && this.selectedVertex !== null) this.removeSelectedVertex();
       else if (this.cursorSelected && this.document?.cursor?.visible) this.setCursorIncluded(false);
       else this.removeSelected();
       return handled();
@@ -2517,6 +2781,12 @@ export class RedlineOverlay {
     if (direction && !ctrl && !event.altKey && ((this.tool === 'select' && this.selectedId) || legendMovable) && !inControls) {
       const step = event.shiftKey ? 10 : 1;
       this.nudgeSelected(direction[0] * step, direction[1] * step);
+      return handled();
+    }
+    if (!ctrl && !event.altKey && !event.shiftKey && key === 'v') {
+      this.setTool('select');
+      this.selectionMode = 'object';
+      this.selectedVertex = null;
       return handled();
     }
     if (!ctrl && !event.altKey && !event.shiftKey && TOOL_KEYS[key]) {
@@ -2540,11 +2810,15 @@ export class RedlineOverlay {
     let paintedMarks = marks;
     if (this.textEditor.active) {
       const editing = this.textEditor.mark;
-      paintedMarks = editing.type === 'rectangle'
-        ? marks.map(mark => mark.id === editing.id ? { ...mark, text: '' } : mark)
-        : marks.filter(mark => mark.id !== editing.id);
+      paintedMarks = marks.map(mark => mark.id === editing.id ? editing : mark);
+      if (this.textEditor.creating && !paintedMarks.some(mark => mark.id === editing.id)) paintedMarks.push(editing);
     }
     this.layer.render(paintedMarks);
+    this.layer.renderTextEditing(this.textEditor.active ? this.textEditor.mark : null, {
+      start: this.textEditor.selectionStart,
+      end: this.textEditor.selectionEnd,
+      focused: this.textEditor.active,
+    });
 
     const selected = this.selectedId ? (live?.id === this.selectedId ? live : doc.find(this.selectedId)) : null;
     if (this.selectedId && !selected) this.selectedId = null;
@@ -2556,6 +2830,8 @@ export class RedlineOverlay {
       scale: this._scale(),
       handles: this.tool === 'select' && !this.gestures.pointer,
       bounds: doc,
+      mode: this.selectionMode,
+      selectedVertex: this.selectedVertex,
     });
     this.cropView.sync(doc, this.tool === 'crop');
     const recovery = this._recovery;
@@ -2620,6 +2896,7 @@ export class RedlineOverlay {
       canRedo: Boolean(doc?.canRedo),
       count: doc?.marks.length ?? 0,
       hasSelection: Boolean(this.selectedId && this.tool === 'select'),
+      selectionMode: this.selectionMode,
       subject: this._subject(),
       cursor: { included: Boolean(doc?.cursor?.visible), placing: this.cursorPlacing, follow: this.cursorFollow },
       recovery: this._recoveryState(),

@@ -158,6 +158,18 @@ test('legacy arrows and lines serialise exactly as before', () => {
   assert.deepEqual(Object.keys(line).sort(), ['color', 'end', 'id', 'start', 'type', 'width']);
 });
 
+test('arbitrary outline opacity survives JSON for lines and closed shapes', () => {
+  const doc = new RedlineDocument();
+  const line = doc.add({ ...mark('line-opacity'), opacity: 0.42 });
+  const rectangle = doc.add(box({ id: 'rectangle-opacity', color: '#DC2626', opacity: 0.37 }));
+  assert.equal(line.opacity, 0.42);
+  assert.equal(rectangle.opacity, 0.37);
+  const reloaded = new RedlineDocument();
+  reloaded.load(doc.toJSON());
+  assert.equal(reloaded.find('line-opacity').opacity, 0.42);
+  assert.equal(reloaded.find('rectangle-opacity').opacity, 0.37);
+});
+
 test('end decorations are validated, stored only when not the default, and canonicalised', () => {
   const doc = new RedlineDocument();
   assert.equal(doc.add({ ...mark('one'), endDecoration: 'arrow' }).type, 'arrow');

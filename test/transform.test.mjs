@@ -119,11 +119,12 @@ test('the Canvas renderer turns a rotated primitive about its centre and restore
 
 test('a framed mark has eight handles on its frame and a rotate knob above the top edge', () => {
   const handles = handleMap(rect());
-  assert.deepEqual(Object.keys(handles), [...FRAME_HANDLES, 'rotate']);
+  assert.deepEqual(Object.keys(handles), [...FRAME_HANDLES, 'center', 'rotate']);
   const expected = {
     nw: [100, 200], n: [200, 200], ne: [300, 200], e: [300, 250], se: [300, 300], s: [200, 300], sw: [100, 300], w: [100, 250],
   };
   for (const [name, [x, y]] of Object.entries(expected)) nearPoint(handles[name], { x, y }, 1e-9, name);
+  nearPoint(handles.center, { x: 200, y: 250 }, 1e-9, 'center move handle');
   nearPoint(handles.rotate, { x: 200, y: 200 - ROTATE_KNOB_OFFSET }, 1e-9, 'knob');
   nearPoint(handles.rotate.from, { x: 200, y: 200 }, 1e-9, 'stem');
 
@@ -150,7 +151,7 @@ test('the frame of a stroke surrounds its ink, and a flat stroke offers no handl
   assert.equal(brush.pad, 8, 'the highlighter paints four times its stored width');
 
   const underline = pen({ points: [{ x: 10, y: 50 }, { x: 200, y: 50 }] });
-  assert.deepEqual(Object.keys(handleMap(underline)), ['nw', 'ne', 'e', 'se', 'sw', 'w', 'rotate']);
+  assert.deepEqual(Object.keys(handleMap(underline)), ['nw', 'ne', 'e', 'se', 'sw', 'w', 'center', 'rotate']);
 });
 
 test('straight lines have a handle on each end; bullets and notes have none', () => {

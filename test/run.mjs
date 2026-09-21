@@ -558,12 +558,18 @@ try {
   await page.mouse.move(100, 500); await page.mouse.down();
   await page.mouse.move(350, 650, { steps: 4 }); await page.mouse.up();
   const editorBounds = await evaluate(() => {
-    const rect = globalThis.__redlineTestRoot.querySelector('[data-redline-text-editor]').getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    const root = globalThis.__redlineTestRoot;
+    const editor = root.querySelector('[data-redline-text-editor]');
+    const rect = editor.getBoundingClientRect();
+    const caret = root.querySelector('[data-redline-text-caret]');
+    const point = new DOMPoint(+caret.getAttribute('x1'), +caret.getAttribute('y1')).matrixTransform(caret.getScreenCTM());
+    const style = getComputedStyle(editor);
+    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height, caret: { x: point.x, y: point.y }, opacity: style.opacity, pointerEvents: style.pointerEvents };
   });
-  check('text editor aligns with the resized drawing surface',
-    Math.abs(editorBounds.x - 100) < 1 && Math.abs(editorBounds.y - 500) < 1
-    && Math.abs(editorBounds.width - 250) < 1 && Math.abs(editorBounds.height - 150) < 1, JSON.stringify(editorBounds));
+  check('native text input is hidden while the custom caret aligns inside the resized drawing surface',
+    editorBounds.width <= 3 && editorBounds.opacity === '0.01' && editorBounds.pointerEvents === 'none'
+    && editorBounds.caret.x >= 100 && editorBounds.caret.x <= 350
+    && editorBounds.caret.y >= 500 && editorBounds.caret.y <= 650, JSON.stringify(editorBounds));
   await page.keyboard.type('Private test text');
   await page.keyboard.press('Control+Enter');
   check('text editing still saves inside a closed shadow root after resize', await marks() === 2);
@@ -604,18 +610,28 @@ try {
   await importFile(stylePath);
   await waitUntil(async () => await marks() === 0, 'style document imported');
 
-  const pickColor = async (target, preset) => {
+  const pickColor = async (target, preset, opacity = null) => {
     await evaluate(name => globalThis.__redlineTestRoot.querySelector(`[data-redline-color="${name}"]`).click(), target);
     await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette opened');
+    if (opacity !== null) await evaluate(value => {
+      const slider = globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"] input[type="range"]');
+      slider.value = String(Math.round(value * 100));
+      slider.dispatchEvent(new Event('input'));
+    }, opacity);
     await evaluate(name => globalThis.__redlineTestRoot.querySelector(`[data-redline-picker] [data-preset="${name}"]`).click(), preset);
+    await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
+  };
+  const removePaint = async target => {
+    await evaluate(name => globalThis.__redlineTestRoot.querySelector(`[data-redline-color="${name}"]`).click(), target);
+    await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette opened');
+    await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-no-paint]').click());
     await waitUntil(() => evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'palette closed');
   };
   const styleControl = selector => evaluate(value => globalThis.__redlineTestRoot.querySelector(value).click(), selector);
 
   await styleControl('[data-redline-tool="rectangle"]');
   await pickColor('stroke', 'issue');
-  await styleControl('[data-treatment="outline-fill"]');
-  await styleControl('[data-fill-opacity="0.5"]');
+  await pickColor('fill', 'issue', 0.5);
   // Below the dragged toolbar, which would otherwise take the pointer.
   await page.mouse.move(120, 400); await page.mouse.down();
   await page.mouse.move(380, 560, { steps: 4 }); await page.mouse.up();
@@ -627,7 +643,7 @@ try {
     boxStyle.fill?.toLowerCase() === '#dc2626' && boxStyle.fillOpacity === '0.5'
     && boxStyle.stroke?.toLowerCase() === '#dc2626', JSON.stringify(boxStyle));
 
-  // Outline and fill colours are independent, and Fill only must stay reachable.
+  // Outline and fill colours are independent, and No Outline stays in the outline dialog.
   await styleControl('[data-redline-tool="select"]');
   await page.mouse.click(250, 480);
   await waitUntil(() => evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-target]').textContent === 'Selected rectangle'), 'rectangle selected');
@@ -635,15 +651,19 @@ try {
   await waitUntil(async () => (await boxAttr('fill'))?.toLowerCase() === '#16a34a', 'independent fill applied');
   check('a fill colour can differ from the outline colour',
     (await boxAttr('stroke'))?.toLowerCase() === '#dc2626' && (await boxAttr('fill-opacity')) === '0.5');
-  await styleControl('[data-treatment="fill"]');
+  await removePaint('stroke');
   await waitUntil(async () => (await boxAttr('stroke')) === 'none', 'fill-only style applied');
   const fillOnly = { fill: await boxAttr('fill'), stroke: await boxAttr('stroke'),
-    outlineControl: await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-color="stroke"]').disabled) };
-  check('a fill-only box paints its fill, no stroke, and disables its outline colour',
-    fillOnly.fill?.toLowerCase() === '#16a34a' && fillOnly.stroke === 'none' && fillOnly.outlineControl, JSON.stringify(fillOnly));
+    outlineControl: await evaluate(() => ({
+      disabled: globalThis.__redlineTestRoot.querySelector('[data-redline-color="stroke"]').disabled,
+      label: globalThis.__redlineTestRoot.querySelector('[data-redline-color="stroke"]').getAttribute('aria-label'),
+    })) };
+  check('No Outline removes the stroke while its swatch remains available to restore it',
+    fillOnly.fill?.toLowerCase() === '#16a34a' && fillOnly.stroke === 'none'
+    && !fillOnly.outlineControl.disabled && /No outline/i.test(fillOnly.outlineControl.label), JSON.stringify(fillOnly));
 
   // Put the outline back so the export below matches the pixel assertion.
-  await styleControl('[data-treatment="outline-fill"]');
+  await pickColor('stroke', 'issue');
   await pickColor('fill', 'issue');
   await waitUntil(async () => (await boxAttr('stroke'))?.toLowerCase() === '#dc2626'
     && (await boxAttr('fill'))?.toLowerCase() === '#dc2626', 'outline restored');

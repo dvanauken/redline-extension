@@ -1,5 +1,5 @@
 /**
- * A synthetic document exercising treatments, graduated fill opacity,
+ * A synthetic document exercising independent fill/outline paint, graduated fill opacity,
  * independent outline and fill colours, and every end decoration.
  * Coordinates are laid out for a 1200 × 800 document.
  */

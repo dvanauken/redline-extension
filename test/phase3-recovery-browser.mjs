@@ -113,8 +113,16 @@ async function recoveryRun() {
 
     // Build a session through real input: fill, both bullet schemes with typed explanations, pointer, crop and output.
     await page.keyboard.press('r');
-    await s.h.press('[data-treatment="outline-fill"]');
-    await s.h.press('[data-fill-opacity="0.5"]');
+    await s.h.press('[data-redline-color="fill"]');
+    await waitUntil(() => s.access.evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'fill dialog opened');
+    await s.access.evaluate(() => {
+      const root = globalThis.__redlineTestRoot;
+      const slider = root.querySelector('[data-dialog="redline-color"] input[type="range"]');
+      slider.value = '50';
+      slider.dispatchEvent(new Event('input'));
+    });
+    await page.keyboard.press('Escape');
+    await waitUntil(() => s.access.evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-dialog="redline-color"]').open), 'fill dialog closed');
     await s.drag('r', [150, 450], [350, 560]);
     await page.keyboard.press('u');
     await s.h.press('[data-redline-legend-toggle]');

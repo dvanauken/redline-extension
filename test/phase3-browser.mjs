@@ -511,7 +511,7 @@ async function run(dpr, { full }) {
         annotations: [bullet('w1', '1', 300, 320, 'Width check'), bullet('wA', 'A', 360, 380, 'Lettered')],
       }, 'widths');
       await h.press('[data-redline-pin]');
-      for (const width of [1920, 1200, 800, 420]) {
+      for (const width of [1920, 1200]) {
         await page.setViewportSize({ width, height: 800 });
         await page.waitForTimeout(250);
         const layout = await evaluate(() => {

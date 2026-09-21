@@ -22,7 +22,8 @@ dialog[data-redline-eyedropper] {
   --rl-accent-line: #E0C3C6;
   --rl-idle-indicator: #767B82;
   --rl-focus: #2F6DB5;
-  --rl-selection: #2563EB;
+  --rl-selection: #16A34A;
+  --rl-direct-selection: #F59E0B;
   --rl-shadow: 0 1px 2px rgb(41 45 50 / 0.08), 0 8px 24px rgb(41 45 50 / 0.14);
   --rl-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --rl-checker: repeating-conic-gradient(#D9D5CC 0 25%, #FFFFFF 0 50%) 0 0 / 8px 8px;
@@ -261,11 +262,15 @@ dialog[data-redline-eyedropper] {
   border-radius: 2px;
 }
 [data-redline-context][data-target="defaults"] [data-redline-target]::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--rl-accent);
+  content: none;
+}
+[data-redline-context][data-target="defaults"] [data-redline-target] {
+  height: auto;
+  padding: 0 2px 0 0;
+  border-right: 0;
+  color: var(--rl-muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 [data-redline-control] { display: inline-flex; align-items: center; gap: 2px; }
 [data-redline-context] > [data-redline-control],
@@ -273,30 +278,25 @@ dialog[data-redline-eyedropper] {
 [data-redline-context] > [data-redline-hint],
 [data-redline-context] > [data-redline-message] { flex: 0 0 auto; }
 [data-redline-context] button { height: 30px; min-width: 30px; padding: 0 8px; border-radius: 6px; }
-[data-redline-context] [data-redline-control="treatment"],
-[data-redline-context] [data-redline-control="fillOpacity"],
+[data-redline-control="textFormat"] { gap: 1px; }
+[data-redline-text-format] { padding: 0 !important; font-family: Georgia, serif !important; font-size: 14px !important; }
+[data-redline-text-format="bold"] { font-weight: 800 !important; }
+[data-redline-text-format="italic"] { font-style: italic !important; }
+[data-redline-text-format="underline"] { text-decoration: underline; }
 [data-redline-context] [data-redline-end-presets] {
   padding: 1px;
   background: var(--rl-control);
   border: 1px solid var(--rl-divider);
   border-radius: 8px;
 }
-[data-redline-context] [data-redline-control="treatment"] button,
-[data-redline-context] [data-redline-control="fillOpacity"] button,
 [data-redline-context] [data-redline-end-presets] button { height: 26px; padding: 0 6px; }
-[data-redline-context] [data-redline-control="fillOpacity"] { padding-left: 8px; }
 [data-redline-caption] { margin-right: 4px; color: var(--rl-muted); white-space: nowrap; }
 [data-redline-end-presets] { display: inline-flex; gap: 1px; }
 [data-redline-control="ends"] { gap: 6px; flex-wrap: nowrap; min-width: max-content; max-width: none; }
-
-[data-redline-treatment-icon] rect { fill: none; stroke: currentColor; stroke-width: 1.75; }
-[data-redline-treatment-icon="outline-fill"] rect { fill: currentColor; fill-opacity: 0.3; }
-[data-redline-treatment-icon="fill"] rect { fill: currentColor; fill-opacity: 0.55; stroke: none; }
 [data-redline-dock] svg[data-redline-ends-icon] { width: 34px; height: 14px; stroke-width: 1.6; }
 [data-redline-ends-icon] circle[data-filled] { fill: currentColor; }
 
-[data-redline-swatch],
-[data-redline-opacity-swatch] {
+[data-redline-swatch] {
   position: relative;
   flex: none;
   overflow: hidden;
@@ -306,11 +306,23 @@ dialog[data-redline-eyedropper] {
   background: var(--rl-checker);
   box-shadow: inset 0 0 0 1px rgb(41 45 50 / 0.3);
 }
-[data-redline-opacity-swatch] { width: 14px; height: 14px; border-radius: 3px; }
-[data-redline-swatch] > span,
-[data-redline-opacity-swatch] > span { position: absolute; inset: 0; }
+[data-redline-swatch] > span { position: absolute; inset: 0; }
 [data-redline-swatch="stroke"] { background: var(--rl-control); }
 [data-redline-swatch="stroke"] > span { inset: 2px; border-radius: 2px; }
+[data-redline-swatch][data-no-paint] { background: var(--rl-control); }
+[data-redline-swatch][data-no-paint]::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  left: -2px;
+  width: 22px;
+  height: 2px;
+  background: #C93C45;
+  box-shadow: 0 0 0 1px var(--rl-control);
+  transform: rotate(-45deg);
+  transform-origin: center;
+}
 
 [data-redline-field] {
   display: inline-flex;
@@ -456,6 +468,8 @@ dialog[data-redline-eyedropper] {
 [data-redline-canvas][data-hover="resize-n"], [data-redline-canvas][data-hover="resize-s"] { cursor: ns-resize; }
 [data-redline-canvas][data-hover="resize-e"], [data-redline-canvas][data-hover="resize-w"] { cursor: ew-resize; }
 [data-redline-canvas][data-hover="endpoint"] { cursor: crosshair; }
+[data-redline-canvas][data-hover="point-insert"] { cursor: copy; }
+[data-redline-canvas][data-hover="default"] { cursor: default; }
 [data-redline-canvas][data-hover="rotate"] {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5' stroke='%23FFFFFF' stroke-width='4.5'/%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5' stroke='%23111827' stroke-width='2'/%3E%3C/svg%3E") 12 12, grab;
 }
@@ -471,12 +485,28 @@ dialog[data-redline-eyedropper] {
 }
 /* A framed mark's frame is solid, like an Office selection; handles sit on it. */
 [data-redline-selection][data-redline-frame] { stroke-width: 1; stroke-dasharray: none; }
-[data-redline-resize] circle,
+[data-redline-resize] rect,
 [data-redline-rotate] circle {
-  fill: #FFFFFF;
-  stroke: var(--rl-selection);
-  stroke-width: 1.5;
+  fill: #22C55E;
+  stroke: #111827;
+  stroke-width: 2;
   filter: drop-shadow(0 1px 1.5px rgba(31, 35, 40, 0.35));
+}
+[data-redline-move-handle] rect { fill: #4ADE80; }
+[data-redline-direct-boundary] {
+  fill: none;
+  stroke: var(--rl-direct-selection);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+[data-redline-direct-point] {
+  fill: #FFFFFF;
+  stroke: #111827;
+  stroke-width: 1;
+}
+[data-redline-direct-point][data-selected] {
+  fill: var(--rl-direct-selection);
+  stroke-width: 1.5;
 }
 [data-redline-rotate-stem] { stroke: var(--rl-selection); stroke-width: 1; }
 [data-redline-rotate-icon] {
@@ -503,7 +533,9 @@ dialog[data-redline-eyedropper] {
 [data-redline-context] [data-redline-control="cursor"] button[data-active] { background: var(--rl-accent-soft); border-color: var(--rl-accent-line); }
 [data-redline-context] [data-redline-control="recovery"] {
   gap: 6px;
-  max-width: min(560px, 100%);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   padding: 2px 4px 2px 8px;
   color: #1E3A5F;
   background: #EAF1FB;
@@ -553,7 +585,9 @@ dialog[data-redline-eyedropper] {
 
 [data-redline-context] [data-redline-control="bulletLimit"] {
   gap: 6px;
-  max-width: min(520px, 100%);
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   padding: 2px 4px 2px 8px;
   color: #7A2E0E;
   background: #FDF0E6;
@@ -561,6 +595,20 @@ dialog[data-redline-eyedropper] {
   border-radius: 8px;
   white-space: normal;
 }
+[data-redline-recovery-text] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-redline-context] [data-redline-control="recovery"] button { flex: 0 0 auto; }
+[data-redline-bullet-limit-text] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-redline-context] [data-redline-control="bulletLimit"] button { flex: 0 0 auto; }
 [data-redline-bullet-next] { color: var(--rl-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 [data-redline-context] [data-redline-control="legendStyle"] { gap: 6px; flex-wrap: nowrap; min-width: max-content; max-width: none; }
 [data-redline-context] [data-redline-control="explanationActions"] [data-redline-explanation-save] {
@@ -579,18 +627,25 @@ dialog[data-redline-eyedropper] {
   z-index: 2;
   box-sizing: border-box;
   margin: 0;
+  padding: 0;
   overflow: hidden;
   resize: none;
-  color: #292D32;
-  background: rgba(255, 255, 255, 0.75);
-  border-style: solid;
-  border-radius: 3px;
+  color: transparent;
+  caret-color: transparent;
+  background: transparent;
+  border: 0;
   outline: none;
-  font-weight: 400;
-  overflow-wrap: anywhere;
+  opacity: 0.01;
+  pointer-events: none;
   user-select: text;
 }
-[data-redline-text-editor]::placeholder { color: #62676D; }
+[data-redline-text-selection] { fill: rgb(47 109 181 / 0.28); stroke: none; }
+[data-redline-text-caret] {
+  stroke: #111827;
+  stroke-width: 1.5;
+  animation: redline-caret-blink 1s steps(1, end) infinite;
+}
+@keyframes redline-caret-blink { 50% { opacity: 0; } }
 [data-redline-text-controls] {
   position: absolute;
   z-index: 3;
@@ -644,6 +699,43 @@ dialog[data-dialog="redline-color"]::backdrop { background: transparent; }
   background: var(--rl-chrome);
   font: 650 13px/1.3 var(--rl-font);
 }
+[data-redline-color-options] {
+  display: grid;
+  grid-template-columns: auto auto minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 320px;
+  padding: 10px 12px;
+  background: var(--rl-control);
+  border-bottom: 1px solid var(--rl-divider);
+  font: 500 12px/1.2 var(--rl-font);
+}
+[data-redline-color-options][hidden] { display: none; }
+[data-redline-color-options] label { color: var(--rl-muted); }
+[data-redline-color-options] input[type="range"] {
+  width: 100%;
+  min-width: 120px;
+  accent-color: var(--rl-accent-text);
+}
+[data-redline-color-options] output {
+  min-width: 38px;
+  color: var(--rl-text);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+[data-redline-color-options] button {
+  min-height: 28px;
+  padding: 3px 8px;
+  color: var(--rl-text);
+  background: var(--rl-chrome);
+  border: 1px solid var(--rl-divider);
+  border-radius: 6px;
+  font: 600 12px/1.2 var(--rl-font);
+  cursor: pointer;
+}
+[data-redline-color-options] button:hover { background: var(--rl-hover); }
+[data-redline-color-options] button[data-redline-no-paint] { color: #8E3038; }
+[data-redline-color-options] :focus-visible { outline: 2px solid var(--rl-focus); outline-offset: 2px; }
 dialog[data-dialog="redline-color"] wb-color-picker {
   display: block;
   --wb-accent: var(--rl-accent-text);
@@ -742,11 +834,12 @@ dialog[data-redline-preview] button:disabled { opacity: 0.45; cursor: not-allowe
 dialog[data-redline-preview] :focus-visible { outline: 2px solid var(--rl-focus); outline-offset: 2px; }
 
 /* ---- Narrow layouts ---------------------------------------------------- */
-@media (max-width: 1400px) {
-  [data-redline-context] [data-redline-control="treatment"] [data-redline-label] { display: none; }
-}
 @media (max-width: 1100px) {
   [data-redline-hint] { display: none; }
+}
+@media (max-width: 2399px) {
+  [data-redline-toolbar][data-density="compact"] [data-redline-control="explain"] [data-redline-label],
+  [data-redline-toolbar][data-density="compact"] [data-redline-control="legendToggle"] [data-redline-label] { display: none; }
 }
 @media (max-width: 800px) {
   [data-redline-caption],
