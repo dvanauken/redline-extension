@@ -1,225 +1,161 @@
-/** Canvas renderer shared by PNG export and tests. */
-
-function line(ctx, points) {
-  if (!points.length) return;
-  ctx.beginPath();
-  ctx.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
-  ctx.stroke();
-}
-
-function arrow(ctx, start, end, width) {
-  line(ctx, [start, end]);
-  const angle = Math.atan2(end.y - start.y, end.x - start.x);
-  const length = Math.max(12, width * 4);
-  ctx.beginPath();
-  ctx.moveTo(end.x, end.y);
-  ctx.lineTo(end.x - length * Math.cos(angle - Math.PI / 6), end.y - length * Math.sin(angle - Math.PI / 6));
-  ctx.moveTo(end.x, end.y);
-  ctx.lineTo(end.x - length * Math.cos(angle + Math.PI / 6), end.y - length * Math.sin(angle + Math.PI / 6));
-  ctx.stroke();
-}
-
-function roundedRect(ctx, x, y, width, height, radius) {
-  const r = Math.min(radius, width / 2, height / 2);
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + width, y, x + width, y + height, r);
-  ctx.arcTo(x + width, y + height, x, y + height, r);
-  ctx.arcTo(x, y + height, x, y, r);
-  ctx.arcTo(x, y, x + width, y, r);
-  ctx.closePath();
-}
-
 /**
- * Fill paint for a mark, or null when it has none.
+ * Canvas renderer shared by PNG export and tests.
  *
- * Shared with the SVG overlay so the PNG and the live marks cannot disagree.
- * A mark's `fill` defaults to its stroke colour, which is what lets a single
- * swatch set stroke and fill together.
+ * It draws the primitives from RedlineGeometry.js, the same ones the live SVG
+ * draws, measured with the same text measurer.
  */
-export function redlineMarkFill(mark) {
-  const opacity = Number(mark?.fillOpacity);
-  if (!Number.isFinite(opacity) || opacity <= 0) return null;
-  return { color: mark.fill ?? mark.color, opacity: Math.min(1, opacity) };
+
+import { cursorPrimitives } from './RedlineCursor.js';
+import { markPrimitives } from './RedlineGeometry.js';
+import { drawLegend, layoutLegend } from './RedlineLegend.js';
+import { createApproximateMeasurer, fontString } from './RedlineTextLayout.js';
+import { fontForTextStyle } from './RedlineShapeText.js';
+
+export {
+  redlineMarkFill, redlineMarkStroked, redlineNoteGlyph, redlineTextBoxFill,
+} from './RedlineStyles.js';
+
+function tracePath(ctx, primitive) {
+  const [first, ...rest] = primitive.points;
+  ctx.beginPath();
+  ctx.moveTo(first.x, first.y);
+  for (const point of rest) ctx.lineTo(point.x, point.y);
+  if (primitive.closed) ctx.closePath();
 }
 
-/**
- * Whether a mark paints its outline.
- *
- * Dropping the outline is only allowed where a fill takes over; a shape with
- * neither would be invisible. The model enforces that too, but a draft is drawn
- * before it reaches the model, so the guard belongs here as well.
- */
-export function redlineMarkStroked(mark) {
-  if (mark?.outline !== false) return true;
-  return !redlineMarkFill(mark);
+function traceRect(ctx, { x, y, width, height, radius }) {
+  ctx.beginPath();
+  const r = Math.min(radius ?? 0, width / 2, height / 2);
+  if (r > 0) ctx.roundRect(x, y, width, height, r);
+  else ctx.rect(x, y, width, height);
 }
 
-/**
- * The glyph inside a note's circle.
- *
- * A number only stays one character up to 9, and the circle has no room for
- * two. Letters carry 26 steps in the same space; past Z they keep going the way
- * spreadsheet columns do (AA, AB) rather than breaking. The stored `number` is
- * always the plain ordinal, so the sequence survives either presentation.
- */
-export function redlineNoteGlyph(number, marker = 'numeric') {
-  const ordinal = Math.max(1, Math.floor(Number(number)) || 1);
-  if (marker !== 'alpha') return String(ordinal);
-  let remaining = ordinal;
-  let glyph = '';
-  while (remaining > 0) {
-    glyph = String.fromCharCode(65 + ((remaining - 1) % 26)) + glyph;
-    remaining = Math.floor((remaining - 1) / 26);
+function paint(ctx, primitive) {
+  if (primitive.fill) {
+    ctx.save();
+    ctx.globalAlpha = primitive.fill.opacity;
+    ctx.fillStyle = primitive.fill.color;
+    ctx.fill();
+    ctx.restore();
   }
-  return glyph;
+  if (primitive.stroke) {
+    ctx.save();
+    ctx.globalAlpha = primitive.stroke.opacity;
+    ctx.strokeStyle = primitive.stroke.color;
+    ctx.lineWidth = primitive.stroke.width;
+    ctx.stroke();
+    ctx.restore();
+  }
 }
 
-/** Match the presentation-style text boxes used by the main canvas. */
-export function redlineTextBoxFill(opacity = 1) {
-  const alpha = Math.min(1, Math.max(0, Number.isFinite(opacity) ? opacity : 1));
-  return `rgba(24,27,34,${alpha})`;
-}
-
-function wrappedLines(ctx, text, maxWidth) {
-  const lines = [];
-  for (const paragraph of String(text ?? '').split('\n')) {
-    if (!paragraph) {
-      lines.push('');
-      continue;
+export function drawPrimitive(ctx, primitive) {
+  if (primitive.rotation?.angle) {
+    const { angle, cx, cy } = primitive.rotation;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate((angle * Math.PI) / 180);
+    ctx.translate(-cx, -cy);
+    drawPrimitive(ctx, { ...primitive, rotation: null });
+    ctx.restore();
+    return;
+  }
+  if (primitive.kind === 'path') {
+    if (!primitive.points.length) return;
+    tracePath(ctx, primitive);
+    paint(ctx, primitive);
+  } else if (primitive.kind === 'rect') {
+    traceRect(ctx, primitive);
+    paint(ctx, primitive);
+  } else if (primitive.kind === 'ellipse') {
+    ctx.beginPath();
+    ctx.ellipse(primitive.cx, primitive.cy, Math.max(0, primitive.rx), Math.max(0, primitive.ry), 0, 0, Math.PI * 2);
+    paint(ctx, primitive);
+  } else if (primitive.kind === 'text') {
+    ctx.save();
+    if (primitive.clip) {
+      ctx.beginPath();
+      ctx.rect(primitive.clip.x, primitive.clip.y, primitive.clip.width, primitive.clip.height);
+      ctx.clip();
     }
-    let line = '';
-    for (const word of paragraph.split(/\s+/)) {
-      const candidate = line ? line + ' ' + word : word;
-      if (!line || ctx.measureText(candidate).width <= maxWidth) {
-        line = candidate;
-      } else {
-        lines.push(line);
-        line = word;
+    ctx.font = fontString(primitive.font.size, primitive.font.weight);
+    ctx.fillStyle = primitive.color;
+    ctx.textAlign = primitive.anchor === 'middle' ? 'center' : 'left';
+    ctx.textBaseline = 'alphabetic';
+    for (const line of primitive.lines) {
+      if (line.runs?.length) {
+        for (const run of line.runs) {
+          ctx.font = fontForTextStyle(run.style);
+          ctx.fillStyle = run.style.color;
+          if (run.text) ctx.fillText(run.text, run.x, run.y);
+          if (run.style.underline && run.width > 0) {
+            ctx.beginPath();
+            ctx.strokeStyle = run.style.color;
+            ctx.lineWidth = Math.max(1, run.style.size / 16);
+            ctx.moveTo(run.x, run.y + Math.max(1, run.style.size * 0.08));
+            ctx.lineTo(run.x + run.width, run.y + Math.max(1, run.style.size * 0.08));
+            ctx.stroke();
+          }
+        }
+      } else if (line.text) {
+        ctx.fillText(line.text, line.x, line.y);
       }
     }
-    lines.push(line);
+    ctx.restore();
   }
-  return lines;
 }
 
 export function drawRedlineAnnotations(ctx, annotations, {
   scaleX = 1,
   scaleY = scaleX,
-  fontFamily = 'Arial, sans-serif',
+  measurer = createApproximateMeasurer(),
 } = {}) {
   ctx.save();
   ctx.scale(scaleX, scaleY);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-
   for (const mark of annotations) {
-    ctx.strokeStyle = mark.color;
-    ctx.fillStyle = mark.color;
-    ctx.lineWidth = mark.width;
-
-    if (['pen', 'brush', 'polyline', 'polygon'].includes(mark.type)) {
-      const alpha = mark.opacity ?? (mark.type === 'brush' ? 0.35 : 1);
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      if (mark.type === 'brush') {
-        ctx.lineWidth = Math.max(mark.width * 4, 6);
-      }
-      // The fill goes down first so the stroke stays crisp on top of it.
-      const areaPaint = mark.type === 'polygon' ? redlineMarkFill(mark) : null;
-      if (areaPaint && mark.points.length > 2) {
-        ctx.save();
-        ctx.globalAlpha = areaPaint.opacity;
-        ctx.fillStyle = areaPaint.color;
-        ctx.beginPath();
-        ctx.moveTo(mark.points[0].x, mark.points[0].y);
-        for (let i = 1; i < mark.points.length; i++) ctx.lineTo(mark.points[i].x, mark.points[i].y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-      }
-      if (redlineMarkStroked(mark)) {
-        line(ctx, mark.points);
-        if (mark.type === 'polygon' && mark.points.length > 1) {
-          ctx.lineTo(mark.points[0].x, mark.points[0].y);
-          ctx.stroke();
-        }
-      }
-      ctx.restore();
-    } else if (mark.type === 'line') {
-      line(ctx, [mark.start, mark.end]);
-    } else if (mark.type === 'arrow') {
-      arrow(ctx, mark.start, mark.end, mark.width);
-    } else if (mark.type === 'rectangle') {
-      const x = Math.min(mark.start.x, mark.end.x);
-      const y = Math.min(mark.start.y, mark.end.y);
-      const boxWidth = Math.abs(mark.end.x - mark.start.x);
-      const boxHeight = Math.abs(mark.end.y - mark.start.y);
-      const paint = redlineMarkFill(mark);
-      if (paint) {
-        ctx.save();
-        ctx.globalAlpha = paint.opacity;
-        ctx.fillStyle = paint.color;
-        ctx.fillRect(x, y, boxWidth, boxHeight);
-        ctx.restore();
-      }
-      if (redlineMarkStroked(mark)) ctx.strokeRect(x, y, boxWidth, boxHeight);
-    } else if (mark.type === 'textbox') {
-      const x = Math.min(mark.start.x, mark.end.x);
-      const y = Math.min(mark.start.y, mark.end.y);
-      const boxWidth = Math.abs(mark.end.x - mark.start.x);
-      const boxHeight = Math.abs(mark.end.y - mark.start.y);
-      const padding = 10;
-      const fontSize = mark.fontSize ?? 16;
-      roundedRect(ctx, x, y, boxWidth, boxHeight, 4);
-      ctx.fillStyle = redlineTextBoxFill(mark.backgroundOpacity);
-      ctx.fill();
-      ctx.strokeStyle = mark.color;
-      ctx.lineWidth = mark.width;
-      ctx.stroke();
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x + 1, y + 1, Math.max(0, boxWidth - 2), Math.max(0, boxHeight - 2));
-      ctx.clip();
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '400 ' + fontSize + 'px ' + fontFamily;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      const lineHeight = fontSize * 1.25;
-      let textY = y + padding;
-      for (const textLine of wrappedLines(ctx, mark.text, Math.max(1, boxWidth - padding * 2))) {
-        if (textY + lineHeight > y + boxHeight) break;
-        ctx.fillText(textLine, x + padding, textY);
-        textY += lineHeight;
-      }
-      ctx.restore();
-    } else if (mark.type === 'note') {
-      const radius = 14;
-      ctx.beginPath();
-      ctx.arc(mark.point.x, mark.point.y, radius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.font = `bold 14px ${fontFamily}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(redlineNoteGlyph(mark.number, mark.marker), mark.point.x, mark.point.y + 0.5);
-
-      ctx.font = `600 14px ${fontFamily}`;
-      ctx.textAlign = 'left';
-      const labelX = mark.point.x + 22;
-      const labelY = mark.point.y - 16;
-      const textWidth = Math.min(420, Math.max(80, ctx.measureText(mark.text).width + 20));
-      roundedRect(ctx, labelX, labelY, textWidth, 32, 5);
-      ctx.fillStyle = 'rgba(255,255,255,0.96)';
-      ctx.fill();
-      ctx.strokeStyle = mark.color;
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.fillStyle = '#111827';
-      ctx.fillText(mark.text, labelX + 10, labelY + 17);
-    }
+    for (const primitive of markPrimitives(mark, measurer)) drawPrimitive(ctx, primitive);
   }
-
   ctx.restore();
+}
+
+/** The export legend layout for a document snapshot, or null when none is drawn. */
+export function prepareLegendLayout(snapshot, measurer) {
+  if (!snapshot.legend?.visible) return null;
+  const layout = layoutLegend(snapshot.legend, snapshot.annotations, measurer);
+  return layout.rows.length ? layout : null;
+}
+
+/** Draw the pointer proxy, if the snapshot includes a visible one. */
+export function drawRedlineCursor(ctx, cursor, { scaleX = 1, scaleY = scaleX } = {}) {
+  if (!cursor?.visible) return;
+  ctx.save();
+  ctx.scale(scaleX, scaleY);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const primitive of cursorPrimitives(cursor)) drawPrimitive(ctx, primitive);
+  ctx.restore();
+}
+
+/**
+ * Draw a document snapshot (RedlineDocument#toJSON): its marks, then its legend
+ * when visible with at least one bullet to explain, then the pointer proxy when
+ * included. No editing decoration is ever drawn here. `cursor: false` leaves
+ * the proxy out, for a capture that already contains real cursor pixels.
+ */
+export function drawRedlineDocument(ctx, snapshot, {
+  scaleX = 1,
+  scaleY = scaleX,
+  measurer = createApproximateMeasurer(),
+  cursor = true,
+} = {}) {
+  drawRedlineAnnotations(ctx, snapshot.annotations, { scaleX, scaleY, measurer });
+  const layout = prepareLegendLayout(snapshot, measurer);
+  if (layout) {
+    ctx.save();
+    ctx.scale(scaleX, scaleY);
+    drawLegend(ctx, layout, { measurer });
+    ctx.restore();
+  }
+  if (cursor) drawRedlineCursor(ctx, snapshot.cursor, { scaleX, scaleY });
 }

@@ -1,6 +1,6 @@
 # Redline: three prompts for Claude
 
-Prepared from the complete conversation on 2026-09-13. This is an implementation brief, not a record of completed feature work. Proposed defaults below resolve details the user has not specified.
+Prepared from the complete conversation on 2026-09-13. The execution status below records completed work and independent acceptance. Proposed defaults below resolve details the user has not specified.
 
 Use exactly three implementation prompts, sequentially. Prompt 1 includes the blanket introduction. Prompts 2 and 3 reread it from this file. The team lead reviews each handoff, corrects defects directly, and reruns meaningful checks before sending the next prompt. Corrections do not require a fourth implementation prompt to Claude.
 
@@ -61,6 +61,7 @@ Architecture, validation, and working agreement:
 - Compact the main bar. Keep Undo, Redo, Copy image, and Close visible; use reachable overflow for lower-frequency actions/tools, including PNG/JSON/import/Clear. Preserve Pin/drag. Menus must not expand the bar sideways or be clipped by overflow.
 - Put active-tool/selected-object settings in a secondary row or anchored panel. Pen: color/thickness; Highlighter: width/opacity; closed shapes: outline/fill; Line: endpoints; Notes: scheme; Text: font size/background. Keep essential action positions stable as context changes.
 - Use Annotate/Browse with F2 and explicit state. Labels: Thickness, Note labels, Import annotations, More tools. Keep Eraser discoverable. Preserve helpful shortcut tooltips and accessible names.
+- Latest user refinement: Text should start with a click, followed immediately by typing; no rectangle drag is required. Use dark text on a semi-transparent white background that expands live horizontally, then wraps and grows downward. Saved text remains editable, and PNG/JSON must retain its size and appearance. Apply this to the ordinary Text tool as well as respecting the separate legend editor requirement.
 - Fix and regression-test all four reproduced review bugs before adding new export features.
 - Separate styling a selected object from setting future drawing defaults. Controls must identify their target. Select-mode appearance edits affect only the selected mark; drawing presets affect upcoming marks. Do not modify the last-created mark merely because it remained selected. Restore each object's exact style through selection, undo/redo, reopen, and JSON.
 - Three explicit treatments for closed shapes: Outline, Outline + fill, Fill only. Graduated fill opacity: 10%, 25%, 50%, 75%, 100%; Outline represents zero fill. Show actual transparency on a neutral/checkered ground, support independent outline/fill colors, prevent invisible no-outline/zero-fill states. Changing color preserves treatment and has explicit stroke/fill targeting.
@@ -151,8 +152,81 @@ Team lead: independently inspect diff/UI/exports and run the full model/browser/
 
 ## Execution status
 
-- Brief prepared; no implementation phase started.
-- Claude CLI found at `C:\nvm4w\nodejs\claude.ps1`. Authentication/implementation invocation not tested in this planning turn.
-- Phase 1 lead acceptance: pending.
-- Phase 2 lead acceptance: pending.
-- Phase 3 lead acceptance: pending.
+- Phase 1 lead acceptance: **accepted on 2026-09-13 after corrections**. Reviewed Claude's supplied handoff and the working tree on `feat/redline-workspace-upgrade`.
+- Phase 2 lead acceptance: **accepted on 2026-09-13 after corrections**.
+- Phase 3 lead acceptance: **accepted on 2026-09-13 after corrections**. All three phases have completed lead review; remaining manual checks are listed below.
+
+### Phase 1 acceptance evidence
+
+The lead rechecked the four original regressions, reviewed the shared model/style/geometry/text/export responsibilities, ran the acceptance suites, and inspected generated UI and PNG screenshots at 1920, 1200, 800 and 420 px. The light workspace, contextual settings, three treatments, graduated opacity, closed shapes, paths, endpoint decorations, keyboard interactions, history and JSON behavior satisfy Phase 1.
+
+The following additional defects were reproduced and corrected during lead review:
+
+- **Lost fill settings:** Outline erased the custom fill colour and strength. Each shape now retains optional validated `savedFill: {color, opacity}` while its fill is hidden. Restoring fill uses that object's settings, including imported strengths such as 35%. Rectangle, ellipse and polygon round-trips, immutable state, undo/redo and atomic rejection of malformed saved settings are covered.
+- **Selected-object edits leaking into defaults:** changing a selected shape updated the global remembered fill strength. Selection edits now leave future drawing defaults unchanged; those defaults retain their own fill settings.
+- **Status toast in PNG:** capture hid the overlay dialog but left its sibling toast visible. The extension capture adapter now hides the entire host and restores its prior visibility in `finally`. Pixel sampling verifies the underlying page is exported where the toast was visible.
+- **Off-screen End selector at 420 px:** the endpoint group overflowed to x=516. Controls now wrap and retain visible Start/End labels. Both selectors and all six presets fit at every review width; mouse and keyboard operation at 420 px is covered.
+
+The latest ordinary Text refinement is also present: click and type, dark text on 75% white paper, live horizontal expansion followed by wrapping/downward growth, later editing, and matching saved/exported size. Its visible native textarea is separate from the Canvas legend editor required by Phase 2.
+
+Validation completed:
+
+- `npm test` passed: 89 model/style/layout tests; 125 existing browser checks; 71 Phase 1 browser checks; lead-review regressions; click-to-type scenarios at DPR 1 and 2; mocked watcher tests.
+- After the final narrow-layout correction, `node test/phase1-review-browser.mjs` passed **11/11** checks. Before correction, this test demonstrated the off-screen End selector; earlier runs also demonstrated the lost fill, changed defaults and toast pixels.
+- `npm run screenshots` regenerated 42 images under `test-artifacts/screenshots`. Representative views: `1920-01-toolbar-pen.png`, `1200-04-selected-rectangle.png`, `800-06-palette-more-colors.png`, `420-03-more-actions-menu.png`, `420-07-line-ends.png` and `1200-11-demo-export.png`. Live text: `test-artifacts/text-live-dpr1.png`.
+- Local test logs: `test-artifacts/phase1-lead-tests.log` and `test-artifacts/review-after.log`. Artifacts are ignored by Git.
+
+Manual checks still outstanding: actual OS clipboard paste, IME composition and the installed Chrome shortcut. Automated fallback/input tests do not establish these. Keep them explicit in later handoffs. Older builds cannot render the new ellipse type or all endpoint decorations; current code still reads legacy v1 files. Bullet limits, optional legend/Canvas editing remain Phase 2; cursor proxy, reload recovery and report/export integration remain Phase 3.
+
+
+### Phase 2 acceptance evidence
+
+The lead independently reviewed the supplied Opus handoff, document/history/import changes, Canvas layout/editor, gesture integration, and export behavior. The original full suite passed before corrections. Bullet schemes and exhaustion, stable explanations, optional legend, immediate/later editing, duplicate/delete/undo, legacy imports, shared Canvas/PNG layout, crop/output transforms and narrow controls satisfy Phase 2.
+
+Three issues were corrected during review:
+
+- **Long explanations became unreachable:** the hidden textarea remained inside the window but the drawn caret could be far below it. Added a temporary scrollable Canvas editing view when content exceeds the available screen space. Typing and keyboard navigation reveal the caret; wheel scrolling and pointer hit testing use the same translation. Hidden-legend cards also support this view. It stays clear of toolbar bounds without changing stored legend geometry. The footer identifies the editing view and export clipping; scrolling and editing decorations never enter JSON or PNG.
+- **Composition could trigger Browse:** the window-level F2 handler ran before the hidden input's composition guard and finished the edit. It now respects composition state, composing key events and key code 229.
+- **Saving discarded trailing whitespace:** the editor trimmed trailing spaces and blank lines even though the bullet model preserves explanation text. Save now preserves the exact explanation; JSON and PNG export do not change it.
+
+Validation on the corrected code:
+
+- `npm test` passed with **135 model tests**, **125 existing browser checks**, **71 Phase 1 browser checks**, **11 Phase 1 lead checks**, **108 Phase 2 browser checks**, and **24 Phase 2 lead checks**. Ordinary click-to-type scenarios pass at DPR 1 and 2; mocked watcher checks pass.
+- Added `test/legend-viewport.test.mjs` (5 checks) and `test/phase2-review-browser.mjs` (24 checks), included by the aggregate runner. Caret checks compare actual visible Canvas pixels at DPR 1 and 2, including a nonuniform resize to 420 px. They also exercise wheel scrolling, pointer placement in scrolled text, hidden cards, exact whitespace retention, composition protection and saved geometry.
+- PNG exports taken from a scrolled edit match exports of the saved document byte for byte. The temporary editing view has no export or schema footprint.
+- Full log: `test-artifacts/phase2-lead-tests.log`. Focused log: `test-artifacts/phase2-review-after.log`. Before-correction evidence: `test-artifacts/phase2-review-before.log`.
+- Reviewed UI artifacts at 1920, 1200, 800 and 420 px under `test-artifacts/phase2`, plus preview/export parity. New long-editor and narrow-card screenshots are under `test-artifacts/phase2-review`. Artifacts remain local and ignored by Git.
+
+Accepted schema/design decisions: explanations live on bullet IDs, labels are unique within the combined 1–9/A–Z set, legend rows sort numerically then alphabetically, and marks plus legend share undo snapshots. Optional v1 fields retain the legacy reader; older builds cannot read new bullet types. A fixed-height legend's `+N more lines` badge is retained in PNG because it informs the reader about omitted on-image lines; JSON keeps the full text.
+
+Manual verification still outstanding: real OS clipboard paste, a real IME and its candidate window, and the installed Chrome shortcut. Browser clipboard and simulated composition checks pass but do not establish those OS behaviors. Right-to-left text remains unverified; local font availability can change wrapping on another machine. Keyboard editing/clipboard shortcuts work; no Canvas right-click clipboard menu was added. Nonuniform viewport resize retains the existing screen-space stretch semantics.
+
+Phase 3 acceptance and final integration evidence follow. Both earlier phases' corrections remain covered by the aggregate suite.
+
+
+### Phase 3 acceptance evidence and final integration
+
+The lead independently reviewed the Opus handoff and the cursor, report, preview, recovery, background capture guard, storage identity and host-dialog changes. The supplied full suite passed before lead corrections. Phase 3 now satisfies the implementation brief, with the manual limitations below.
+
+Corrections made during lead review:
+
+- **Dialogs outlived the workspace:** closing Redline left Restore, Preview, the colour picker and Clear confirmation open. Closing now cancels all owned dialogs. Cancelled Restore retains the unchanged draft and offers it again on reopening; cancelled Clear retains marks.
+- **Late preview reopened after Close:** a capture could show Preview after the user closed Redline. A lifecycle token rejects stale previews, including when Redline closes and reopens during capture.
+- **Quota failures deleted older drafts:** the store removed moved/evicted entries before saving their replacement. Replacements now save successfully before older entries are removed. Regressions cover both the global draft-count boundary and navigation to another address. At quota, existing drafts remain intact.
+- **Failed Discard claimed success:** deletion failures cleared the pending draft and announced success. Restore now stays available, autosaving stays paused for the pending decision, and errors remain accurate across repeated attempts. Retrying succeeds after storage recovers.
+- **Autosave retry/unload edges:** failed removal of an empty session remains pending for retry. Oversized unload saves are rejected cleanly without sending an undefined draft.
+- **Toolbar width assertion:** the full bar measures about 1184 px at 1920 px, including the requested labelled Copy report button. The test now caps the whole bar at 1200 px while preserving the original controls' 1100 px budget. Responsive checks at 1920, 1200, 800 and 420 px remain in place.
+
+Final validation:
+
+- **npm test exited 0:** 173 model tests; 125 original browser checks; 71 Phase 1 checks; 11 Phase 1 lead checks; 108 Phase 2 checks; 24 Phase 2 lead checks; 108 Phase 3 pointer/report/preview/capture checks; 35 recovery checks; and 13 Phase 3 lead checks. Click-to-type at DPR 1 and 2 and the mocked watcher pass.
+- Added test/phase3-review-browser.mjs to the aggregate runner and four model regressions to test/recovery.test.mjs. They cover real extension toggling, delayed capture, retained explanations, cancellation, failed/repeated Discard, successful retry, quota preservation, unload limits and empty-session deletion.
+- Final log: test-artifacts/phase3-lead-final-tests.log. Before-fix evidence: phase3-review-before.log, phase3-review-model-before.log, phase3-review-retry-before.log and phase3-review-repeat-before.log in the same directory.
+- Visually reviewed toolbar, pointer controls, More actions, export preview and recovery at 1920, 1200, 800 and 420 px using test-artifacts/phase3. Artifacts are local and ignored by Git.
+- Integration tests preserve mixed shape treatments, graduated fills, endpoints, both bullet schemes and exhaustion, long Canvas explanations and exact whitespace, cursor placement, crop/output, JSON round-trip and reload recovery. The restored PNG is pixel-identical at DPR 2.
+- Clipboard readback, denied-clipboard fallback, HTML escaping, redacted URLs, page isolation and real multi-tab capture rejection pass. The original four regressions and earlier lead corrections remain covered.
+- Shipped permissions remain activeTab, scripting, clipboardWrite and storage. The worker is now an ES module. Production retains its closed shadow root and no test hooks, broad host permissions, ordinary-page storage or external uploads.
+
+Manual/environmental limits remain: actual OS clipboard paste and the format chosen by destination apps; a real IME and its candidate window/reconversion; and the installed Chrome shortcut. Chromium clipboard, simulated composition and direct extension activation do not establish these OS behaviors. Recovery covers the same browser session and uses screen-space coordinates without undo history. Nonuniform resizing retains the established stretch behavior. Headless tab visibility differs from a normal browser: real multi-tab tests establish worker activation/navigation rejection, not the content visibility guard. Capture checks tab identity and activation/navigation before and after the browser operation; this is not a claim of atomic capture-by-tab under arbitrarily delayed events.
+
+All three phases are accepted against the implementation brief with these manual limits recorded. Changes remain uncommitted on feat/redline-workspace-upgrade; this review did not commit, push, publish or deploy anything.

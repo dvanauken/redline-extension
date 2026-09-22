@@ -4,5 +4,5 @@ export {
   sanitizeAnnotation,
   translateAnnotation,
 } from './RedlineDocument.js';
-export { drawRedlineAnnotations } from './RedlineCanvas.js';
+export { drawRedlineAnnotations, drawRedlineDocument } from './RedlineCanvas.js';
 
