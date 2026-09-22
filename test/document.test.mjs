@@ -194,7 +194,7 @@ test('an unknown decoration value rejects the whole import atomically', () => {
 test('fields this version cannot keep are reported rather than silently dropped', () => {
   const doc = new RedlineDocument();
   const report = doc.load({
-    // `legend` was the example here before Phase 2 made it a supported field.
+    // `legend` was the example here before it became a supported field.
     width: 100, height: 100, theme: { dark: true },
     annotations: [{ ...mark('x'), comment: 'hi' }, { id: 'r', type: 'rectangle', start: { x: 0, y: 0 }, end: { x: 5, y: 5 }, startDecoration: 'arrow' }],
   });

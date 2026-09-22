@@ -130,5 +130,5 @@ try {
   await context.close();
   await new Promise(resolve => server.close(resolve));
 }
-console.log(results.filter(result => result.pass).length + '/' + results.length + ' lead-review checks passed');
+console.log(results.filter(result => result.pass).length + '/' + results.length + ' fill and capture checks passed');
 process.exitCode = results.every(result => result.pass) ? 0 : 1;

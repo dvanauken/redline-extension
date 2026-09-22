@@ -1,6 +1,6 @@
 /** Preserve page layout when Annotate hides a classic scrollbar. */
 import {createChecker,launch,openRedline,startServer} from './harness.mjs';
-import {helpers} from './phase3-helpers.mjs';
+import {helpers} from './ui-helpers.mjs';
 const {check,results}=createChecker();
 const fixture='<!doctype html><style>body{margin:0;height:1600px}.stage{height:600px;margin-left:255px;background:#DDEEDD}canvas{width:100%;height:100%;display:block}</style><div class="stage"><canvas></canvas></div><script>window.resets=0;window.view=0;const s=document.querySelector(".stage");new ResizeObserver(()=>{window.resets++;window.view=0}).observe(s);s.onpointermove=e=>{if(e.buttons===1)window.view+=e.movementX};</script>';
 const {server,origin}=await startServer({'/stage':fixture});

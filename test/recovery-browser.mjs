@@ -1,8 +1,8 @@
 /**
- * Phase 3 acceptance: same-browser-session reload recovery, through real
+ * Same-browser-session reload recovery, through real
  * reloads, navigation, tabs and pointer/keyboard input.
  *
- *   node test/phase3-recovery-browser.mjs [--headed]
+ *   node test/recovery-browser.mjs [--headed]
  *
  * Covers Restore and Discard, the original viewport context, deciding later
  * without overwriting the waiting draft, replacing current marks, clearing,
@@ -18,9 +18,9 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createChecker, launch, openRedline, startServer, waitUntil } from './harness.mjs';
-import { bullet, helpers, html } from './phase3-helpers.mjs';
+import { bullet, helpers, html } from './ui-helpers.mjs';
 
-const SHOTS = path.join('test-artifacts', 'phase3');
+const SHOTS = path.join('test-artifacts', 'recovery');
 await fs.mkdir(SHOTS, { recursive: true });
 const { results, check } = createChecker();
 const SECRET = 'sk-recovery-secret';
@@ -475,7 +475,7 @@ try {
   await recoveryRun();
   await pixelParityRun();
 } catch (error) {
-  check('Phase 3 recovery suite completed without an unhandled error', false, error.stack ?? error.message);
+  check('recovery browser suite completed without an unhandled error', false, error.stack ?? error.message);
 } finally {
   server.close();
 }

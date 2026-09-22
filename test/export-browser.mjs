@@ -1,9 +1,9 @@
 /**
- * Phase 3 acceptance: pointer proxy, Copy report and its clipboard fallbacks,
+ * Pointer proxy, Copy report and its clipboard fallbacks,
  * export preview, capture tab isolation, narrow layouts and privacy, through
  * real pointer and keyboard input at DPR 2 and DPR 1.
  *
- *   node test/phase3-browser.mjs [--headed]
+ *   node test/export-browser.mjs [--headed]
  *
  * Clipboard checks use headless Chromium's own clipboard (read back in the page
  * world with granted permissions) and a page served with
@@ -15,16 +15,16 @@
  * build's service worker (from the test, at run time) so a tab switch or
  * navigation can land deterministically mid-capture; production code gains no
  * hook. Tabs are activated with chrome.tabs.update, a real browser tab switch.
- * Screenshots go to test-artifacts/phase3.
+ * Screenshots go to test-artifacts/export.
  */
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createChecker, launch, openRedline, startServer, waitUntil } from './harness.mjs';
 import {
   EXPLANATION, activate, bullet, dark, helpers, html, near, setCaptureDelay, tabIdFor, white,
-} from './phase3-helpers.mjs';
+} from './ui-helpers.mjs';
 
-const SHOTS = path.join('test-artifacts', 'phase3');
+const SHOTS = path.join('test-artifacts', 'export');
 await fs.mkdir(SHOTS, { recursive: true });
 const { results, check } = createChecker();
 
@@ -74,7 +74,7 @@ async function run(dpr, { full }) {
       await evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-cursor-toggle]').getAttribute('aria-pressed')) === 'false'
       && !('cursor' in (await h.exportJSON()).document) && await h.cursorAt() === null);
 
-    // Regression found during Phase 3 integration: a colour dialog's close event
+    // Regression: a colour dialog's close event
     // arrives a task later and used to cancel a request reopened before it ran.
     await h.click('[data-redline-tool="rectangle"]');
     await h.click('[data-redline-color="stroke"]');
@@ -590,7 +590,7 @@ try {
   await run(2, { full: true });
   await run(1, { full: false });
 } catch (error) {
-  check('Phase 3 browser suite completed without an unhandled error', false, error.stack ?? error.message);
+  check('export browser suite completed without an unhandled error', false, error.stack ?? error.message);
 } finally {
   server.close();
 }

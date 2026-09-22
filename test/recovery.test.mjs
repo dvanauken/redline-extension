@@ -401,6 +401,37 @@ test('a failed save after navigation keeps the last recoverable version at its p
   assert.deepEqual(await storage.get(null), before, 'navigation must not delete the last good draft before saving the new one');
 });
 
+test('saves read every stored draft only once, and the index still sees eviction', async () => {
+  const storage = fakeSessionStorage();
+  const getAll = storage.get.bind(storage);
+  let fullReads = 0;
+  storage.get = keys => {
+    if (keys === null) fullReads += 1;
+    return getAll(keys);
+  };
+  const drafts = store(storage);
+  for (let page = 0; page < MAX_DRAFTS_PER_TAB + 2; page++) {
+    await drafts.save(1, `https://a.test/${page}`, draftFor(`s${page}`, `m${page}`));
+  }
+  assert.equal(fullReads, 1);
+  const kept = Object.keys(await getAll(null)).filter(name => name.startsWith(DRAFT_KEY_PREFIX));
+  assert.equal(kept.length, MAX_DRAFTS_PER_TAB);
+  assert.equal(await drafts.load(1, 'https://a.test/0'), null, 'the oldest page was evicted');
+  assert.equal((await drafts.removeTab(1)).removed, MAX_DRAFTS_PER_TAB);
+});
+
+test('after a failed removal the store rereads storage instead of trusting its index', async () => {
+  const storage = fakeSessionStorage();
+  const drafts = store(storage);
+  await drafts.save(1, 'https://a.test/a', draftFor('s1', 'a'));
+  const remove = storage.remove.bind(storage);
+  storage.remove = async () => { throw new Error('storage unavailable'); };
+  await assert.rejects(drafts.removeTab(1), /storage unavailable/);
+  storage.remove = remove;
+  assert.equal((await drafts.removeTab(1)).removed, 1, 'the draft that was not removed is still found');
+  assert.deepEqual(Object.keys(await storage.get(null)).filter(name => name.startsWith(DRAFT_KEY_PREFIX)), []);
+});
+
 // ---------------------------------------------------------------------------
 // Capture guard
 

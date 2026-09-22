@@ -1,61 +1,36 @@
 import { RedlineDocument, cryptoId, translateAnnotation } from './RedlineDocument.js';
-import { RedlineEyedropper } from './RedlineEyedropper.js';
-import { appendIcon } from './icons.js';
 import { RedlineCropView } from './RedlineCropView.js';
-import {
-  PointerTrail, clampCursor, cursorBounds, cursorHitTest, cursorInsideCrop, cursorPrimitives, moveCursor,
-} from './RedlineCursor.js';
-import {
-  blobToDataUrl, canvasToBlob, captureBaseImage, clipboardSupport, composeAnnotatedCanvas,
-  composeFullPageAnnotatedCanvas, downloadBlob, timestampName,
-} from './RedlineExport.js';
+import { clampCursor, cursorHitTest } from './RedlineCursor.js';
 import { hitTestMark, markPrimitives, topmostMarkAt } from './RedlineGeometry.js';
 import { RedlineGestures } from './RedlineGestures.js';
 import { prepareLegendLayout } from './RedlineCanvas.js';
 import {
   BULLET_SCHEMES, LEGEND_MARGIN, LEGEND_MIN_WIDTH, bulletLabelStatus, bulletLimit, bulletSchemeOf, defaultLegend,
-  layoutLegend, legendClipping, moveLegend, nextBulletLabel, normalizeScheme,
+  layoutLegend, moveLegend, nextBulletLabel, normalizeScheme,
 } from './RedlineLegend.js';
 import { RedlineLegendEditor } from './RedlineLegendEditor.js';
-import { RedlinePreview } from './RedlinePreview.js';
-import { DraftAutosaver, buildDraft, describeDraft, draftHasContent, readDraft } from './RedlineRecovery.js';
-import { buildReport, reportCounts } from './RedlineReport.js';
-import {
-  applyStyleChange, CLOSED_TYPES, DEFAULT_COLOR, DEFAULT_FILL_OPACITY, DECORATIONS, LINE_TYPES, PT_TO_CSS_PX,
-  STROKE_OPACITY_TYPES, isHexColor, markDecorations, redlineMarkFill, redlineMarkStroked,
-} from './RedlineStyles.js';
-import { RedlineSvgLayer, renderPrimitives, svgElement } from './RedlineSvg.js';
+import { RedlineOverlayColor } from './RedlineOverlayColor.js';
+import { RedlineOverlayCursor } from './RedlineOverlayCursor.js';
+import { RedlineOverlayDock } from './RedlineOverlayDock.js';
+import { RedlineOverlayExport } from './RedlineOverlayExport.js';
+import { handleOverlayKeyDown } from './RedlineOverlayKeys.js';
+import { RedlineOverlayRecovery } from './RedlineOverlayRecovery.js';
+import { applyStyleChange } from './RedlineStyles.js';
+import { RedlineSvgLayer, svgElement } from './RedlineSvg.js';
 import { RedlineTextEditor } from './RedlineTextEditor.js';
 import { createCanvasMeasurer, fitTextBoxHeight } from './RedlineTextLayout.js';
 import { SHAPE_TEXT_TYPES, TEXT_CONTAINER_TYPES } from './RedlineShapeText.js';
 import { RedlineToolbar, TOOL_INFO } from './RedlineToolbar.js';
+import {
+  DRAWING_TOOLS, MARK_NAMES, createToolDefaults, readPreferences, storeToolDefaults, styleForTool, writePreferences,
+} from './RedlineToolDefaults.js';
 import {
   DIRECT_SELECTION_TYPES, directPointAt, directSegmentAt, directSelectionPoints, handleCursor, insertDirectPoint,
   keepCornerInPlace, moveDirectPoint, removeDirectPoint,
 } from './RedlineTransform.js';
 import './vendor/wb/wb-color-picker/wb-color-picker.define.js';
 
-/** Tools that create marks, and so have drawing defaults to style. */
-const DRAWING_TOOLS = new Set(['pen', 'brush', 'line', 'arrow', 'rectangle', 'ellipse', 'polyline', 'polygon', 'note', 'bullet', 'textbox']);
-const TOOL_KEYS = {
-  v: 'select', p: 'pen', b: 'brush', e: 'eraser', l: 'line', a: 'arrow', r: 'rectangle', o: 'ellipse',
-  n: 'note', u: 'bullet', t: 'textbox', c: 'crop',
-};
-const NUDGE_KEYS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
 const NUDGE_MERGE_MS = 800;
-
-const TYPE_NAMES = {
-  pen: 'pen stroke', brush: 'highlight', line: 'line', arrow: 'arrow', polyline: 'polyline', polygon: 'polygon',
-  rectangle: 'rectangle', ellipse: 'ellipse', note: 'note', bullet: 'bullet', textbox: 'text box',
-};
-
-const validEnds = value => DECORATIONS.includes(value?.start) && DECORATIONS.includes(value?.end);
-
-/** The useful part of a clipboard error, without the API boilerplate or a help link. */
-const clipboardReason = error => String(error?.message ?? error)
-  .replace(/^Failed to execute '\w+' on 'Clipboard':\s*/, '')
-  .replace(/\s*See https?:\/\/\S+.*$/, '')
-  .replace(/\.$/, '') || 'refused';
 
 /**
  * Reusable, full-viewport redline host.
@@ -86,12 +61,9 @@ const clipboardReason = error => String(error?.message ?? error)
  * such position. It stays frozen unless Follow is on; dragging, nudging or
  * placing freezes it again. Escape ends placement, then deselects it.
  *
- * Reload recovery (see RedlineRecovery.js), when the host supplies loadDraft,
- * saveDraft and discardDraft: the first open after a page load checks for a
- * draft before any write, and offers Restore or Discard when one is waiting.
- * While that decision is pending, writes stay paused so the waiting draft is
- * never overwritten. Otherwise changes are saved after a short pause, and
- * immediately when the page is hidden or unloaded.
+ * Reload recovery (see RedlineOverlayRecovery.js) needs the host's loadDraft,
+ * saveDraft and discardDraft. Keyboard routing is in RedlineOverlayKeys.js and
+ * the export actions are in RedlineOverlayExport.js; the methods here delegate.
  */
 export class RedlineOverlay {
   constructor({
@@ -139,37 +111,7 @@ export class RedlineOverlay {
     this.tool = 'pen';
     this._toolBeforeCrop = 'select';
     /** Styles for marks the drawing tools will create. Never a mark's own style. */
-    this.defaults = {
-      color: DEFAULT_COLOR,
-      width: 1 * PT_TO_CSS_PX,
-      intent: null,
-      fill: null,
-      savedFill: null,
-      fillOpacity: 0,
-      outline: true,
-      lastFillOpacity: DEFAULT_FILL_OPACITY,
-      strokeOpacity: 1,
-      brushWidth: 10,
-      brushOpacity: 0.35,
-      fontSize: 16,
-      fontFamily: 'Arial, "Helvetica Neue", Helvetica, "Liberation Sans", sans-serif',
-      textColor: '#292D32',
-      bold: false,
-      italic: false,
-      underline: false,
-      textAlign: 'center',
-      verticalAlign: 'middle',
-      textBoxBackgroundOpacity: 0.75,
-      noteMarker: 'numeric',
-      bulletScheme: 'numeric',
-      /** Whether a new session's legend starts shown; each document stores its own. */
-      legendVisible: false,
-      ends: {
-        line: { start: 'none', end: 'none' },
-        arrow: { start: 'none', end: 'arrow' },
-        polyline: { start: 'none', end: 'none' },
-      },
-    };
+    this.defaults = createToolDefaults();
     this.selectedId = null;
     /** Object mode transforms the whole mark; direct mode edits path vertices. */
     this.selectionMode = 'object';
@@ -183,13 +125,7 @@ export class RedlineOverlay {
     this._events = new EventTarget();
     this._previousFocus = null;
     this._dialogDepth = 0;
-    this._colorDialogResolve = null;
-    this._colorDialogTarget = null;
-    this._colorOpacityMergeKey = null;
-    this._colorOpacityDefaultsDirty = false;
-    this.toolbarPinned = false;
-    this.toolbarPosition = null;
-    this._toolbarDrag = null;
+    this.dock = new RedlineOverlayDock(this);
     this._preferenceSave = Promise.resolve();
     this._defaultsVersion = 0;
     this._nudge = { id: null, run: 0, at: 0 };
@@ -202,22 +138,12 @@ export class RedlineOverlay {
     this.sessionId = cryptoId();
     /** Changes whenever the whole document is replaced, so late async results can tell. */
     this._documentToken = 0;
-    const recoverable = Boolean(loadDraft && saveDraft && discardDraft);
-    this._recovery = { state: recoverable ? 'unchecked' : 'unavailable', pending: null, paused: false, stored: false, failure: null };
-    this._trail = new PointerTrail({
-      accept: sample => this._meaningfulPointer(sample),
-      onCommit: position => this._onPointerTrail(position),
-    });
+    this.recovery = new RedlineOverlayRecovery(this, { loadDraft, saveDraft, discardDraft, requestRecovery });
+    this.exporter = new RedlineOverlayExport(this);
+    this.pointerProxy = new RedlineOverlayCursor(this);
     this.measurer = createCanvasMeasurer();
     this._loadPreferences(preferences);
     this._buildDOM();
-    this._autosave = recoverable ? new DraftAutosaver({
-      snapshot: () => this._draftSnapshot(),
-      save: draft => this.options.saveDraft(draft),
-      discard: () => this.options.discardDraft({ sessionId: this.sessionId }),
-      onResult: result => this._onDraftResult(result),
-      paused: true,
-    }) : null;
 
     this._boundKeyDown = event => this._onKeyDown(event);
     this._boundKeyUp = event => this._onKeyUp(event);
@@ -226,26 +152,26 @@ export class RedlineOverlay {
       this.gestures.cancelPointer();
       this._syncViewport();
       if (this.active) this.toolbarUI.layout();
-      this._applyToolbarPosition();
+      this.dock.apply();
       this.textEditor.position();
-      if (this.colorDialog?.open) this._positionColorDialog();
+      if (this.color?.open) this.color.position();
       this._render({ force: true });
     };
     this._boundBlur = () => {
       this.gestures.cancelPointer();
-      this._trail.leave();
+      this.pointerProxy.trail.leave();
     };
     this._boundVisibility = () => {
       if (document.visibilityState !== 'hidden') return;
       this.gestures.cancelPointer();
-      this._trail.leave();
-      this._autosave?.flush();
+      this.pointerProxy.trail.leave();
+      this.recovery.flush();
     };
     // The page may be unloading: send the latest draft now rather than after a pause.
-    this._boundPageHide = () => this._autosave?.flushNow();
+    this._boundPageHide = () => this.recovery.flushNow();
     // Pointer positions over the page itself, while Redline is closed or in
     // Browse mode. Passive and read-only: the page's own handling is untouched.
-    this._boundPagePointer = event => this._onPagePointer(event);
+    this._boundPagePointer = event => this.pointerProxy.onPagePointer(event);
     // Closed shadow roots hide their event path from window-level listeners.
     this._keyTarget = this.root.getRootNode();
     this._keyTarget.addEventListener('keydown', this._boundKeyDown, true);
@@ -277,11 +203,9 @@ export class RedlineOverlay {
     this._lifecycleToken += 1;
     this.options.dismissDialogs();
     if (this._hoverFrame) cancelAnimationFrame(this._hoverFrame);
-    this._autosave?.flushNow();
-    this._autosave?.pause();
-    this.eyedropper?.destroy();
-    this._trail.reset();
-    this.preview?.destroy();
+    this.recovery.stop();
+    this.pointerProxy.trail.reset();
+    this.exporter.destroy();
     this.textEditor.finish({ commit: false });
     this.legendEditor.destroy();
     this.gestures.cancel();
@@ -294,9 +218,8 @@ export class RedlineOverlay {
     for (const type of ['pointermove', 'pointerdown']) window.removeEventListener(type, this._boundPagePointer, { capture: true });
     document.removeEventListener('visibilitychange', this._boundVisibility);
     this.options.setPageLocked(false);
-    if (this.colorDialog.open) this.colorDialog.close('cancel');
+    this.color.destroy();
     if (this.root.open) this.root.close();
-    this.colorDialog.remove();
     this.root.remove();
   }
 
@@ -319,22 +242,21 @@ export class RedlineOverlay {
     this._syncViewport();
     this.setTool(this.tool);
     this.toolbarUI.layout();
-    this._applyToolbarPosition();
+    this.dock.apply();
     this._render({ force: true });
     this.options.setStatus('Annotate mode — F2 switches to Browse; Esc closes without losing marks.');
     this._events.dispatchEvent(new CustomEvent('redline:opened'));
     this.toolbarUI.toolFocusTarget(this.tool)?.focus();
-    if (this._recovery.state === 'unchecked') this._checkRecovery();
-    else if (this._canPromptRecovery()) this._promptRecovery();
+    this.recovery.onOpen();
   }
 
   close() {
     if (!this.active) return;
     this._lifecycleToken += 1;
-    this.eyedropper?.cancel();
+    this.color.cancelEyedropper();
     this.options.dismissDialogs();
-    this.preview?.close();
-    if (this.colorDialog.open) this.colorDialog.close('cancel');
+    this.exporter.closePreview();
+    this.color.close();
     this.cropView.cancel();
     this.textEditor.finish({ commit: true });
     this.legendEditor.commit({ focus: false });
@@ -344,7 +266,7 @@ export class RedlineOverlay {
     this.cursorSelected = false;
     this.cursorPlacing = false;
     this.active = false;
-    this._autosave?.flush();
+    this.recovery.flush();
     if (this.root.open) this.root.close();
     this.root.hidden = true;
     this.options.setPageLocked(false);
@@ -369,7 +291,7 @@ export class RedlineOverlay {
     this.legendSelected = false;
     this.cursorSelected = false;
     this.cursorPlacing = false;
-    this._trail.leave();
+    this.pointerProxy.trail.leave();
     if (!enabled) this._pageFocus = document.activeElement;
     this.pageMode = enabled;
     this.root.close();
@@ -379,7 +301,7 @@ export class RedlineOverlay {
     else this.root.showModal();
     this._syncViewport();
     this._render({ force: true });
-    this._applyToolbarPosition();
+    this.dock.apply();
     if (enabled) (this._pageFocus ?? this._previousFocus)?.focus?.({ preventScroll: true });
     else this.toolbarUI.toolFocusTarget(this.tool)?.focus({ preventScroll: true });
     this._setMessage('');
@@ -394,13 +316,18 @@ export class RedlineOverlay {
     this.gestures.cancel();
     this.document = this._newDocument();
     this.sessionStartedAt = new Date().toISOString();
+    this._resetSelection();
+    this._documentToken += 1;
+    this._render({ force: true });
+  }
+
+  /** Nothing selected or being placed, for a document that was just replaced. */
+  _resetSelection() {
     this.selectedId = null;
     this.legendSelected = false;
     this.cursorSelected = false;
     this.cursorPlacing = false;
     this._bulletLimit = null;
-    this._documentToken += 1;
-    this._render({ force: true });
   }
 
   /** An empty document for the current viewport, its legend shown if last chosen so. */
@@ -541,7 +468,7 @@ export class RedlineOverlay {
     this._render();
     this._setMessage(copy.type === 'bullet'
       ? `Duplicated bullet ${mark.label} as ${copy.label}, with its explanation`
-      : `Duplicated ${TYPE_NAMES[copy.type] ?? 'mark'}`);
+      : `Duplicated ${MARK_NAMES[copy.type] ?? 'mark'}`);
     return true;
   }
 
@@ -602,11 +529,7 @@ export class RedlineOverlay {
     this.gestures.cancel();
     this._syncViewport();
     this.sessionStartedAt = data.createdAt ?? new Date().toISOString();
-    this.selectedId = null;
-    this.legendSelected = false;
-    this.cursorSelected = false;
-    this.cursorPlacing = false;
-    this._bulletLimit = null;
+    this._resetSelection();
     this._documentToken += 1;
     this._render({ force: true });
     return report;
@@ -618,18 +541,7 @@ export class RedlineOverlay {
     prepareLegendLayout(snapshot, this.measurer);
   }
 
-  async getExportData() {
-    const context = await Promise.resolve(this.options.getContext());
-    return {
-      format: 'open-redline',
-      version: 1,
-      createdAt: this.sessionStartedAt ?? new Date().toISOString(),
-      exportedAt: new Date().toISOString(),
-      page: await Promise.resolve(this.options.describePage()),
-      context: context ?? {},
-      document: this.document?.toJSON() ?? new RedlineDocument().toJSON(),
-    };
-  }
+  getExportData() { return this.exporter.getExportData(); }
 
   chooseImport() {
     this.importInput.value = '';
@@ -659,273 +571,14 @@ export class RedlineOverlay {
     return data;
   }
 
-  async downloadJSON() {
-    this.gestures.cancel();
-    const data = await this.getExportData();
-    downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), timestampName('redline.json'));
-    this._setMessage('Redline data downloaded');
-    return data;
-  }
-
-  async captureAnnotatedImage({ fullPage = false } = {}) {
-    if (!this.document) throw new Error('Open redline mode before capturing.');
-    this.textEditor.finish({ commit: true });
-    this.legendEditor.commit({ focus: false });
-    this.gestures.cancel();
-    const snapshot = this.document.toJSON();
-    const capture = await this._captureBaseImage({ fullPage });
-    const canvas = fullPage
-      ? composeFullPageAnnotatedCanvas(snapshot, capture.canvas, {
-        page: capture.page, measurer: this.measurer, includesCursor: capture.includesCursor,
-      })
-      : composeAnnotatedCanvas(snapshot, capture.canvas, { measurer: this.measurer, includesCursor: capture.includesCursor });
-    return { canvas, scope: capture.scope, snapshot, capture };
-  }
-
-  async copyImage() {
-    this._setBusy(true, 'Capturing this tab…');
-    try {
-      const { canvas, scope } = await this.captureAnnotatedImage();
-      const blob = await canvasToBlob(canvas);
-      const result = await this._copyImageBlob(blob, scope);
-      this._setMessage(result.message);
-      return { blob, scope, copied: result.copied };
-    } finally {
-      this._setBusy(false);
-    }
-  }
-
-  async copyFullPageImage() {
-    this._setBusy(true, 'Capturing the full page…');
-    try {
-      const { canvas, scope } = await this.captureAnnotatedImage({ fullPage: true });
-      const blob = await canvasToBlob(canvas);
-      const result = await this._copyImageBlob(blob, scope);
-      this._setMessage(`${result.message} at ${canvas.width} × ${canvas.height} native pixels`);
-      return { blob, scope, copied: result.copied };
-    } finally {
-      this._setBusy(false);
-    }
-  }
-
-  /** Put a PNG on the clipboard, or download it and say exactly why. */
-  async _copyImageBlob(blob, scope = 'browser-tab') {
-    const support = clipboardSupport();
-    if (!support.api || !support.png) {
-      downloadBlob(blob, timestampName('png'));
-      return { copied: false, message: 'Clipboard images are unavailable in this browser; downloaded PNG instead.' };
-    }
-    try {
-      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-      const message = scope === 'full-page'
-        ? 'Annotated full page copied'
-        : (scope === 'browser-tab' ? 'Annotated screenshot copied' : 'Annotated viewport fallback copied');
-      return { copied: true, message };
-    } catch (error) {
-      console.warn('[Redline] Clipboard write was refused; downloading instead.', error);
-      downloadBlob(blob, timestampName('png'));
-      return { copied: false, message: `The clipboard refused the image (${clipboardReason(error)}); downloaded PNG instead.` };
-    }
-  }
-
-  /**
-   * Copy report: the annotated screenshot plus bullet explanations and notes as
-   * text. `combined` first tries one clipboard item holding the PNG, HTML (with
-   * the image embedded) and plain text. When the browser does not accept those
-   * formats or refuses the write, or when `combined` is false, the report text
-   * goes to the clipboard and the PNG is downloaded; if even text cannot be
-   * copied, the text is downloaded too. The message says exactly what happened.
-   */
-  async copyReport({ combined = true } = {}) {
-    this._setBusy(true, 'Capturing this tab…');
-    try {
-      const { canvas, snapshot } = await this.captureAnnotatedImage();
-      const blob = await canvasToBlob(canvas);
-      const result = await this._deliverReport({ canvas, blob, snapshot, combined });
-      this._setMessage(result.message);
-      this.options.setStatus(result.message);
-      return result;
-    } finally {
-      this._setBusy(false);
-    }
-  }
-
-  async _deliverReport({ canvas, blob, snapshot, combined }) {
-    const page = (await Promise.resolve(this.options.describePage())) ?? {};
-    const context = (await Promise.resolve(this.options.getContext())) ?? {};
-    const createdAt = new Date().toISOString();
-    const image = { width: canvas.width, height: canvas.height };
-    const support = clipboardSupport();
-    let refusal = null;
-    if (combined) {
-      const missing = [['image/png', support.png], ['text/html', support.html], ['text/plain', support.text]]
-        .filter(([, ok]) => !ok).map(([type]) => type);
-      if (!support.api) refusal = 'this browser has no clipboard write API';
-      else if (missing.length) refusal = `the clipboard does not accept ${missing.join(' or ')} here`;
-      else {
-        const report = buildReport({ snapshot, page, context, image, createdAt, imageDataUrl: await blobToDataUrl(blob) });
-        try {
-          await navigator.clipboard.write([new ClipboardItem({
-            'image/png': blob,
-            'text/html': new Blob([report.html], { type: 'text/html' }),
-            'text/plain': new Blob([report.text], { type: 'text/plain' }),
-          })]);
-          const contents = report.bullets.length || report.notes.length ? reportCounts(report) : 'page details';
-          return {
-            image: 'clipboard', text: 'clipboard', combined: true, report,
-            message: `Report copied: the screenshot and ${contents} together. If the app you paste into keeps only the text or only the image, use Copy report text + download PNG.`,
-          };
-        } catch (error) {
-          console.warn('[Redline] The combined report copy was refused.', error);
-          refusal = `the clipboard refused it: ${clipboardReason(error)}`;
-        }
-      }
-    }
-    const fileName = timestampName('png');
-    const report = buildReport({ snapshot, page, context, image, createdAt, imageFileName: fileName });
-    let text = 'none';
-    let textError = null;
-    if (support.api && support.text) {
-      try {
-        const item = { 'text/plain': new Blob([report.text], { type: 'text/plain' }) };
-        if (support.html) item['text/html'] = new Blob([report.html], { type: 'text/html' });
-        await navigator.clipboard.write([new ClipboardItem(item)]);
-        text = 'clipboard';
-      } catch (error) {
-        textError = clipboardReason(error);
-      }
-    } else {
-      textError = 'this browser cannot put text on the clipboard';
-    }
-    downloadBlob(blob, fileName);
-    let textFile = null;
-    if (text !== 'clipboard') {
-      textFile = fileName.replace(/\.png$/, '-report.txt');
-      downloadBlob(new Blob([report.text], { type: 'text/plain' }), textFile);
-      text = 'download';
-    }
-    const message = text === 'clipboard'
-      ? `Report text copied; screenshot downloaded as ${fileName}.${refusal ? ` (Image and text together were not copied: ${refusal}.)` : ''}`
-      : `Clipboard unavailable (${textError}): downloaded the screenshot as ${fileName} and the report text as ${textFile}. Nothing was copied.`;
-    return { image: 'download', text, combined: false, refusal, report, fileName, textFile, message };
-  }
-
-  /**
-   * Export preview: capture once, compose exactly as an export does, and show
-   * the result with its dimensions, legend and pointer. Exports from the
-   * preview reuse that image. Focus returns to where it was when it closes,
-   * and the overlay is visible again whether or not the capture succeeded.
-   */
-  async showExportPreview() {
-    if (!this.document || this._busy || !this.active || this.pageMode) return false;
-    const lifecycle = this._lifecycleToken;
-    this._setBusy(true, 'Capturing an export preview…');
-    let result;
-    try {
-      result = await this.captureAnnotatedImage();
-    } catch (error) {
-      this._setBusy(false);
-      this._reportError(error, 'Could not preview the export');
-      return false;
-    }
-    this._setBusy(false);
-    if (!this.active || lifecycle !== this._lifecycleToken) return false;
-    const returnFocus = this.root.getRootNode().activeElement;
-    this.preview ??= new RedlinePreview({
-      mount: this.options.mount,
-      onAction: (name, detail) => this._onPreviewAction(name, detail).catch(error => {
-        console.error('[Redline]', error);
-        this.preview.setBusy(false);
-        this.preview.setMessage(`Could not ${name}: ${error.message}`);
-      }),
-    });
-    this._preview = { capture: result.capture, canvas: result.canvas, snapshot: result.snapshot };
-    await this._withChildDialog(() => this.preview.show(this._previewContent(this._preview)));
-    this._preview = null;
-    if (this.active) {
-      const target = returnFocus?.isConnected && !returnFocus.disabled && returnFocus.checkVisibility?.()
-        ? returnFocus : this.toolbarUI.toolFocusTarget(this.tool);
-      target?.focus({ preventScroll: true });
-    }
-    this._render({ force: true });
-    return true;
-  }
-
-  _previewContent({ capture, canvas, snapshot }) {
-    const doc = this.document;
-    const parts = [`${canvas.width} × ${canvas.height} PNG`];
-    parts.push(snapshot.crop ? `crop ${Math.round(snapshot.crop.width)} × ${Math.round(snapshot.crop.height)} CSS px` : 'full window');
-    parts.push(`${(snapshot.outputScale ?? 1) * 100}% output`);
-    parts.push(`${Math.round(capture.canvas.width / snapshot.width * 100) / 100}× screenshot pixels`);
-    const bullets = snapshot.annotations.filter(mark => mark.type === 'bullet');
-    const warnings = [];
-    if (bullets.length && snapshot.legend?.visible) {
-      parts.push(`legend with ${bullets.length} explanation${bullets.length === 1 ? '' : 's'}`);
-      const layout = layoutLegend(snapshot.legend, snapshot.annotations, this.measurer);
-      const clipping = legendClipping(layout.box, snapshot.width, snapshot.height, snapshot.crop ?? null);
-      if (clipping.crop) warnings.push('Part of the legend lies outside the crop and is clipped in this image.');
-      else if (clipping.viewport) warnings.push('Part of the legend lies past the window edge and is clipped in this image.');
-      if (layout.overflows) warnings.push(`The legend’s fixed height hides ${layout.hiddenLines} line${layout.hiddenLines === 1 ? '' : 's'}; Copy report and JSON keep the full text.`);
-    } else if (bullets.length) {
-      parts.push('legend hidden');
-      warnings.push(`The legend is hidden on the image; Copy report still lists the ${bullets.length} explanation${bullets.length === 1 ? '' : 's'} as text.`);
-    }
-    if (snapshot.cursor?.visible) {
-      parts.push(capture.includesCursor ? 'real pointer in screenshot' : 'pointer included');
-      if (!cursorInsideCrop(snapshot.cursor, snapshot.crop)) warnings.push('The pointer is outside the crop, so it does not appear in this image.');
-    } else {
-      parts.push('no pointer');
-    }
-    return {
-      canvas,
-      summary: parts.join(' · '),
-      warnings,
-      cursor: { included: Boolean(doc?.cursor?.visible) },
-    };
-  }
-
-  async _onPreviewAction(name, detail) {
-    const state = this._preview;
-    if (!state || !this.preview) return;
-    if (name === 'cursor') {
-      const included = this._setCursorVisibility(Boolean(detail), { select: false });
-      const snapshot = this.document.toJSON();
-      state.snapshot = snapshot;
-      state.canvas = composeAnnotatedCanvas(snapshot, state.capture.canvas, { measurer: this.measurer, includesCursor: state.capture.includesCursor });
-      this.preview.update(this._previewContent(state));
-      this.preview.setMessage(included.message);
-      return;
-    }
-    this.preview.setBusy(true);
-    try {
-      const blob = await canvasToBlob(state.canvas);
-      if (name === 'download') {
-        const fileName = timestampName('png');
-        downloadBlob(blob, fileName);
-        this.preview.setMessage(`Downloaded this image as ${fileName}`);
-      } else if (name === 'copy') {
-        this.preview.setMessage((await this._copyImageBlob(blob)).message);
-      } else if (name === 'report') {
-        const result = await this._deliverReport({ canvas: state.canvas, blob, snapshot: state.snapshot, combined: true });
-        this.preview.setMessage(result.message);
-      }
-    } finally {
-      this.preview.setBusy(false);
-    }
-  }
-
-  async downloadImage() {
-    this._setBusy(true, 'Capturing this tab…');
-    try {
-      const { canvas, scope } = await this.captureAnnotatedImage();
-      const blob = await canvasToBlob(canvas);
-      downloadBlob(blob, timestampName('png'));
-      this._setMessage(scope === 'browser-tab' ? 'Annotated screenshot downloaded' : 'Annotated viewport fallback downloaded');
-      return { blob, scope };
-    } finally {
-      this._setBusy(false);
-    }
-  }
+  downloadJSON() { return this.exporter.downloadJSON(); }
+  captureAnnotatedImage(options) { return this.exporter.captureAnnotatedImage(options); }
+  copyImage() { return this.exporter.copyImage(); }
+  copyFullPageImage() { return this.exporter.copyFullPageImage(); }
+  downloadImage() { return this.exporter.downloadImage(); }
+  /** Copy the annotated screenshot and a text report; see RedlineOverlayExport#copyReport. */
+  copyReport(options) { return this.exporter.copyReport(options); }
+  showExportPreview() { return this.exporter.showExportPreview(); }
 
   _buildDOM() {
     this.root = document.createElement('dialog');
@@ -985,7 +638,7 @@ export class RedlineOverlay {
         keepsEditing: node => Boolean(node && this.toolbarUI.context.contains(node)
           && node.closest?.('[data-redline-control="legendStyle"], [data-redline-control="explanationActions"], [data-redline-control="legendToggle"]')),
         setMessage: text => this._setMessage(text),
-        onInput: () => this._autosave?.schedule(),
+        onInput: () => this.recovery.schedule(),
       },
     });
     // The pointer proxy is drawn above the marks and the legend, as a real pointer is.
@@ -1010,7 +663,7 @@ export class RedlineOverlay {
       measurer: this.measurer,
       getDocument: () => this.document,
       onFinish: result => this._onTextEditFinished(result),
-      onInput: () => this._autosave?.schedule(),
+      onInput: () => this.recovery.schedule(),
       onChange: () => this._render({ force: true }),
       keepsEditing: () => this._dialogDepth > 0,
     });
@@ -1026,19 +679,19 @@ export class RedlineOverlay {
     });
     this.root.appendChild(this.importInput);
 
-    this._applyToolbarPosition();
+    this.dock.apply();
     this.options.mount.appendChild(this.root);
-    this._buildColorDialog();
+    this.color = new RedlineOverlayColor(this);
 
     this.svg.addEventListener('pointerdown', event => this._onPointerDown(event));
     this.svg.addEventListener('pointermove', event => this._onPointerMove(event));
     this.svg.addEventListener('pointerup', event => this._onPointerUp(event));
     this.svg.addEventListener('pointercancel', event => this._onPointerUp(event, true));
-    this.svg.addEventListener('pointerleave', () => this._trail.leave());
+    this.svg.addEventListener('pointerleave', () => this.pointerProxy.trail.leave());
     // Anything above the drawing surface (toolbar, menus, editors, dialogs) is
     // not a meaningful pointer position, and crossing onto it forgets a pause.
     this.root.addEventListener('pointermove', event => {
-      if (event.composedPath()[0] !== this.svg) this._trail.leave();
+      if (event.composedPath()[0] !== this.svg) this.pointerProxy.trail.leave();
     }, true);
     this.svg.addEventListener('lostpointercapture', event => {
       if (this.gestures.pointer?.pointerId === event.pointerId) this.gestures.cancelPointer();
@@ -1054,10 +707,7 @@ export class RedlineOverlay {
       if (!this.textEditor.active || path.includes(this.svg) || path.some(node => this.textEditor.contains(node))) return;
       this.textEditor.finish({ commit: true });
     }, true);
-    this.grip.addEventListener('pointerdown', event => this._onToolbarPointerDown(event));
-    this.grip.addEventListener('pointermove', event => this._onToolbarPointerMove(event));
-    this.grip.addEventListener('pointerup', event => this._onToolbarPointerUp(event));
-    this.grip.addEventListener('pointercancel', event => this._onToolbarPointerUp(event, true));
+    this.dock.attach(this.grip);
     this.root.addEventListener('cancel', event => {
       // A file input also fires a bubbling `cancel` when its chooser is
       // dismissed; only the dialog's own close request means Escape.
@@ -1131,7 +781,7 @@ export class RedlineOverlay {
     if (name === 'mode') return this.setPageMode(detail === 'browse');
     if (name === 'style') return this._applyStyle(detail);
     if (name === 'selectionMode') return this.setSelectionMode(detail);
-    if (name === 'color') return this._chooseColor(detail.target, detail.anchor).catch(error => this._reportError(error));
+    if (name === 'color') return this.color.choose(detail.target, detail.anchor).catch(error => this._reportError(error));
     if (name === 'noteMarker') {
       this.defaults.noteMarker = detail === 'alpha' ? 'alpha' : 'numeric';
       this._defaultsVersion += 1;
@@ -1159,7 +809,7 @@ export class RedlineOverlay {
       explain: () => this.editExplanation(this.selectedId),
       explainCommit: () => this.legendEditor.commit(),
       explainCancel: () => this.legendEditor.cancel(),
-      pin: () => this._toggleToolbarPin(),
+      pin: () => this.dock.togglePin(),
       undo: () => this.undo(),
       redo: () => this.redo(),
       delete: () => this.removeSelected(),
@@ -1182,147 +832,6 @@ export class RedlineOverlay {
       close: () => this.close(),
     };
     return actions[detail]?.();
-  }
-
-  _buildColorDialog() {
-    this.colorDialog = document.createElement('dialog');
-    this.colorDialog.dataset.dialog = 'redline-color';
-    this.colorDialog.setAttribute('aria-labelledby', 'redline-color-heading');
-
-    this.colorHeading = document.createElement('h2');
-    this.colorHeading.id = 'redline-color-heading';
-    this.colorHeading.dataset.redlineColorHeading = '';
-    this.colorDialog.appendChild(this.colorHeading);
-
-    this.colorOptions = document.createElement('div');
-    this.colorOptions.dataset.redlineColorOptions = '';
-    this.colorNoPaintButton = document.createElement('button');
-    this.colorNoPaintButton.type = 'button';
-    this.colorNoPaintButton.dataset.redlineNoPaint = '';
-    this.colorNoPaintButton.addEventListener('click', () => this._settleColorDialog({ none: true }));
-    this.colorOpacityLabel = document.createElement('label');
-    this.colorOpacityLabel.textContent = 'Opacity';
-    this.colorOpacityLabel.htmlFor = 'redline-color-opacity';
-    this.colorOpacity = document.createElement('input');
-    this.colorOpacity.id = 'redline-color-opacity';
-    this.colorOpacity.type = 'range';
-    this.colorOpacity.min = '1';
-    this.colorOpacity.max = '100';
-    this.colorOpacity.step = '1';
-    this.colorOpacity.setAttribute('aria-label', 'Opacity');
-    this.colorOpacityOutput = document.createElement('output');
-    this.colorOpacityOutput.htmlFor = this.colorOpacity.id;
-    this.colorOpacityOutput.dataset.redlineColorOpacityOutput = '';
-    this.colorOpacity.addEventListener('input', () => {
-      this.colorOpacityOutput.value = `${this.colorOpacity.value}%`;
-      this.colorOpacity.setAttribute('aria-valuetext', `${this.colorOpacity.value}% opacity`);
-      if (this.colorDialog.open) this._applyDialogOpacity();
-    });
-    this.colorOptions.append(
-      this.colorNoPaintButton, this.colorOpacityLabel, this.colorOpacity,
-      this.colorOpacityOutput,
-    );
-    this.colorDialog.appendChild(this.colorOptions);
-
-    this.eyedropperButton = document.createElement('button');
-    this.eyedropperButton.type = 'button';
-    this.eyedropperButton.dataset.redlineEyedropperButton = '';
-    this.eyedropperButton.textContent = 'Pick from page';
-    this.eyedropperButton.title = 'Eyedropper — sample a color from the page';
-    this.eyedropperButton.hidden = !this.options.capturePage && !this.options.captureFallback;
-    appendIcon(this.eyedropperButton, 'eyedropper');
-    this.eyedropperButton.addEventListener('click', () => this._samplePageColor());
-    this.colorDialog.appendChild(this.eyedropperButton);
-
-    this.colorPicker = this.options.createColorPicker();
-    this.colorPicker.setAttribute('value', this.defaults.color);
-    this.colorPicker.setAttribute('aria-label', 'Annotation color picker');
-    this.colorPicker.addEventListener('wb-change', event => {
-      if (!event.detail?.color || !this.colorDialog.open) return;
-      this._settleColorDialog({
-        ...this._styleFromPick(event.detail),
-        opacity: Number(this.colorOpacity.value) / 100,
-      });
-    });
-    this.colorPicker.addEventListener('click', event => {
-      if (!this.colorDialog.open) return;
-      const swatch = event.composedPath().find(node => node instanceof Element && node.matches?.('[data-color]'));
-      if (!swatch?.dataset.color) return;
-      this._settleColorDialog({
-        ...this._styleFromPick(swatch.dataset),
-        opacity: Number(this.colorOpacity.value) / 100,
-      });
-    });
-    this.colorDialog.appendChild(this.colorPicker);
-    // [extension patch] keep the color dialog inside the same (shadow) mount as the root.
-    this.options.mount.appendChild(this.colorDialog);
-
-    this.colorDialog.addEventListener('cancel', event => {
-      event.preventDefault();
-      this._settleColorDialog(null);
-    });
-    this.colorDialog.addEventListener('click', event => {
-      if (event.target !== this.colorDialog) return;
-      const rect = this.colorDialog.getBoundingClientRect();
-      const outside = event.clientX < rect.left || event.clientX > rect.right
-        || event.clientY < rect.top || event.clientY > rect.bottom;
-      if (outside) this._settleColorDialog(null);
-    });
-    // Escape or a click outside: nothing was picked. The close event arrives a
-    // task later, so ignore one that lands after a new request reopened the dialog.
-    this.colorDialog.addEventListener('close', () => {
-      if (!this.colorDialog.open) this._settleColorDialog(null);
-    });
-  }
-
-  /**
-   * Resolve the open colour request as soon as a colour is picked, rather than
-   * on the dialog's close event, which arrives a task later.
-   */
-  _settleColorDialog(style) {
-    this.eyedropper?.cancel();
-    if (this._colorOpacityDefaultsDirty) this._savePreferences();
-    this._colorOpacityDefaultsDirty = false;
-    const resolve = this._colorDialogResolve;
-    this._colorDialogResolve = null;
-    if (this.colorDialog.open) this.colorDialog.close(style ? 'apply' : 'cancel');
-    resolve?.(style);
-  }
-
-  async _samplePageColor() {
-    if (!this.active || !this.colorDialog.open || this.eyedropper?.active) return;
-    const request = this._colorDialogResolve;
-    const lifecycle = this._lifecycleToken;
-    this.eyedropper ??= new RedlineEyedropper({
-      mount: this.options.mount,
-      capture: () => this._captureBaseImage(),
-    });
-    this.eyedropperButton.disabled = true;
-    try {
-      const color = await this._withChildDialog(() => this.eyedropper.pick());
-      if (!this.active || lifecycle !== this._lifecycleToken || request !== this._colorDialogResolve) return;
-      if (color) {
-        this._settleColorDialog({ color, intent: null, opacity: Number(this.colorOpacity.value) / 100 });
-        this._setMessage('Picked ' + color + ' from the page');
-      }
-    } catch (error) {
-      if (this.active && lifecycle === this._lifecycleToken && request === this._colorDialogResolve) {
-        this._reportError(error, 'Could not pick a page color');
-      }
-    } finally {
-      this.eyedropperButton.disabled = false;
-      if (this.active && this.colorDialog.open && request === this._colorDialogResolve) {
-        this.eyedropperButton.focus({ preventScroll: true });
-      }
-    }
-  }
-
-  /** A picked colour, with its intent when the pick carried one. */
-  _styleFromPick(source) {
-    if (!isHexColor(source.color)) return null;
-    const style = { color: String(source.color) };
-    if ('intent' in source) style.intent = source.intent ? String(source.intent) : null;
-    return style;
   }
 
   async _withChildDialog(callback) {
@@ -1403,88 +912,10 @@ export class RedlineOverlay {
   }
 
   /** Style fields every new mark of a tool starts with. */
-  _styleFor(tool) {
-    const d = this.defaults;
-    const style = { type: tool, color: d.color, width: d.width };
-    if (d.intent) style.intent = d.intent;
-    if (CLOSED_TYPES.has(tool) && d.fillOpacity > 0) {
-      style.fillOpacity = d.fillOpacity;
-      if (d.fill) style.fill = d.fill;
-      if (!d.outline) style.outline = false;
-    } else if (CLOSED_TYPES.has(tool) && d.savedFill) {
-      style.savedFill = { ...d.savedFill };
-    }
-    if (tool === 'brush') {
-      style.width = d.brushWidth;
-      style.opacity = d.brushOpacity;
-    } else if (STROKE_OPACITY_TYPES.has(tool) && d.strokeOpacity !== 1) {
-      style.opacity = d.strokeOpacity;
-    }
-    if (LINE_TYPES.has(tool)) {
-      const ends = d.ends[tool];
-      if (ends.start !== 'none') style.startDecoration = ends.start;
-      if (ends.end !== (tool === 'arrow' ? 'arrow' : 'none')) style.endDecoration = ends.end;
-    }
-    if (tool === 'textbox') {
-      style.fontSize = d.fontSize;
-      style.fontFamily = d.fontFamily;
-      style.textColor = d.textColor;
-      style.bold = d.bold;
-      style.italic = d.italic;
-      style.underline = d.underline;
-      style.textAlign = 'left';
-      style.verticalAlign = 'top';
-      style.backgroundOpacity = d.textBoxBackgroundOpacity;
-    } else if (CLOSED_TYPES.has(tool)) {
-      style.fontSize = d.fontSize;
-      style.fontFamily = d.fontFamily;
-      style.textColor = d.textColor;
-      style.bold = tool === 'rectangle' ? true : d.bold;
-      style.italic = d.italic;
-      style.underline = d.underline;
-      style.textAlign = d.textAlign;
-      style.verticalAlign = d.verticalAlign;
-    }
-    return style;
-  }
+  _styleFor(tool) { return styleForTool(this.defaults, tool); }
 
   _storeDefaults(tool, style) {
-    const d = this.defaults;
-    d.color = style.color;
-    d.intent = style.intent ?? null;
-    if (tool === 'brush') {
-      d.brushWidth = style.width;
-      d.brushOpacity = style.opacity ?? d.brushOpacity;
-    } else {
-      d.width = style.width;
-      if (STROKE_OPACITY_TYPES.has(tool)) d.strokeOpacity = style.opacity ?? 1;
-    }
-    if (CLOSED_TYPES.has(tool)) {
-      const fill = redlineMarkFill(style);
-      d.fillOpacity = fill ? style.fillOpacity : 0;
-      d.savedFill = style.savedFill ? { ...style.savedFill } : null;
-      d.outline = style.outline !== false;
-      if (fill) {
-        d.fill = style.fill ?? null;
-        d.lastFillOpacity = style.fillOpacity;
-      }
-    }
-    // A straight line may have been renamed arrow (or back) by its ends; the
-    // decorations are what the tool remembers.
-    if (LINE_TYPES.has(tool)) d.ends[tool] = markDecorations(style);
-    if (tool === 'textbox' || CLOSED_TYPES.has(tool)) {
-      d.fontSize = style.fontSize ?? d.fontSize;
-      d.fontFamily = style.fontFamily ?? d.fontFamily;
-      d.textColor = style.textColor ?? d.textColor;
-      d.bold = style.bold ?? d.bold;
-      d.italic = style.italic ?? d.italic;
-      d.underline = style.underline ?? d.underline;
-      d.textAlign = style.textAlign ?? d.textAlign;
-      d.verticalAlign = style.verticalAlign ?? d.verticalAlign;
-    }
-    if (tool === 'textbox') {
-      d.textBoxBackgroundOpacity = style.backgroundOpacity ?? d.textBoxBackgroundOpacity;
-    }
+    storeToolDefaults(this.defaults, tool, style);
     this._defaultsVersion += 1;
   }
 
@@ -1520,133 +951,6 @@ export class RedlineOverlay {
       return true;
     }
     return false;
-  }
-
-  async _chooseColor(target = 'stroke', anchor = null) {
-    if (this.colorDialog.open) return false;
-    // A cancelled native dialog may still have a queued close event. Settle
-    // that request now so a quick reopen cannot lose the user's click.
-    if (this._colorDialogResolve) this._settleColorDialog(null);
-    const subject = this._subject();
-    if (subject.kind === 'none') return false;
-    const style = subject.style;
-    const closed = CLOSED_TYPES.has(style.type);
-    const fill = redlineMarkFill(style);
-    const initial = target === 'text' ? (style.textColor ?? '#292D32')
-      : target === 'fill' ? (fill?.color ?? style.fill ?? style.color) : style.color;
-    const name = TYPE_NAMES[subject.type] ?? 'mark';
-    const role = target === 'text' ? 'Text' : target === 'fill' ? 'Fill' : closed ? 'Outline' : style.type === 'textbox' ? 'Border' : 'Color';
-    this.colorHeading.textContent = `${role}${role === 'Color' ? '' : ' color'} · ${subject.kind === 'selection' ? `selected ${name}` : `new ${name}s`}`;
-    this._colorAnchor = anchor;
-    // [extension patch] no registry means no upgrade to wait for.
-    if (globalThis.customElements) await customElements.whenDefined('wb-color-picker');
-    this.colorPicker.value = initial;
-    if ('annotationStyle' in this.colorPicker) this.colorPicker.annotationStyle = { color: initial, intent: style.intent ?? null };
-    const supportsOpacity = target === 'text' ? false : target === 'fill' ? closed : STROKE_OPACITY_TYPES.has(style.type);
-    const opacity = target === 'fill'
-      ? (fill?.opacity ?? style.savedFill?.opacity ?? this.defaults.lastFillOpacity)
-      : (style.opacity ?? (style.type === 'brush' ? this.defaults.brushOpacity : 1));
-    const opacityMergeKey = Symbol(`color-opacity:${target}`);
-    this._colorDialogTarget = target;
-    this._colorOpacityMergeKey = opacityMergeKey;
-    this._colorOpacityDefaultsDirty = false;
-    this.colorOptions.hidden = target === 'text' || (!closed && !supportsOpacity);
-    this.colorNoPaintButton.hidden = target === 'text' || !closed;
-    this.colorNoPaintButton.textContent = target === 'fill' ? 'No Fill' : 'No Outline';
-    this.colorNoPaintButton.title = target === 'fill'
-      ? 'Remove the shape fill'
-      : 'Remove the shape outline';
-    for (const element of [this.colorOpacityLabel, this.colorOpacity, this.colorOpacityOutput]) {
-      element.hidden = !supportsOpacity;
-    }
-    this.colorOpacity.value = String(Math.max(1, Math.round(opacity * 100)));
-    this.colorOpacityOutput.value = `${this.colorOpacity.value}%`;
-    this.colorOpacity.setAttribute('aria-valuetext', `${this.colorOpacity.value}% opacity`);
-    this.colorDialog.returnValue = 'cancel';
-
-    const picked = await this._withChildDialog(() => new Promise(resolve => {
-      this._colorDialogResolve = resolve;
-      this.colorDialog.showModal();
-      this._positionColorDialog();
-      this.colorPicker.initialFocus?.focus();
-    }));
-    this._colorAnchor?.focus?.({ preventScroll: true });
-    if (!picked || !this.active) return false;
-    if (picked.none && closed) {
-      return this._applyStyle(
-        { property: 'treatment', value: target === 'fill' ? 'outline' : 'fill' },
-        { mergeKey: opacityMergeKey },
-      );
-    }
-    if (!picked.color) return false;
-    if (target === 'text') return this._applyStyle({ property: 'textColor', value: picked.color });
-    // The pick names the mark's meaning only when it sets the colour people see
-    // first: the outline, or the fill of a fill-only shape.
-    const primary = target === 'fill' ? closed && !redlineMarkStroked(style) : !closed || redlineMarkStroked(style);
-    const value = {
-      color: picked.color,
-      opacity: picked.opacity,
-      fillOpacity: picked.opacity,
-      enable: closed,
-    };
-    if (primary && 'intent' in picked) value.intent = picked.intent;
-    else if (primary) value.intent = null;
-    return this._applyStyle(
-      { property: target === 'fill' ? 'fillColor' : 'strokeColor', value },
-      { mergeKey: opacityMergeKey },
-    );
-  }
-
-  /** Apply range input immediately, without requiring a colour pick or closing the dialog. */
-  _applyDialogOpacity() {
-    const target = this._colorDialogTarget;
-    const subject = this._subject();
-    if (!target || subject.kind === 'none') return false;
-    const style = subject.style;
-    const closed = CLOSED_TYPES.has(style.type);
-    if (target === 'fill' && !closed) return false;
-    if (target === 'stroke' && !STROKE_OPACITY_TYPES.has(style.type)) return false;
-    const fill = redlineMarkFill(style);
-    const color = target === 'fill'
-      ? (fill?.color ?? style.savedFill?.color ?? style.fill ?? style.color)
-      : style.color;
-    const opacity = Number(this.colorOpacity.value) / 100;
-    const value = target === 'fill'
-      ? { color, fillOpacity: opacity }
-      : { color, opacity, enable: closed };
-    const changed = this._applyStyle(
-      { property: target === 'fill' ? 'fillColor' : 'strokeColor', value },
-      { mergeKey: this._colorOpacityMergeKey, savePreferences: false },
-    );
-    if (changed) {
-      this._colorOpacityDefaultsDirty ||= subject.kind === 'defaults';
-    }
-    return changed;
-  }
-
-  _positionColorDialog() {
-    if (!this.colorDialog?.open) return;
-    const trigger = this._colorAnchor?.isConnected ? this._colorAnchor : this.toolbarUI.bar;
-    const gutter = 8;
-    const gap = 6;
-    const triggerRect = trigger.getBoundingClientRect();
-    this.colorDialog.style.left = '0px';
-    this.colorDialog.style.top = '0px';
-    const dialogRect = this.colorDialog.getBoundingClientRect();
-    const maxLeft = Math.max(gutter, window.innerWidth - dialogRect.width - gutter);
-    const maxTop = Math.max(gutter, window.innerHeight - dialogRect.height - gutter);
-    let left = triggerRect.left;
-    let top = triggerRect.bottom + gap;
-    let placement = 'bottom-start';
-    if (top + dialogRect.height > window.innerHeight - gutter) {
-      top = triggerRect.top - dialogRect.height - gap;
-      placement = 'top-start';
-    }
-    left = Math.min(Math.max(gutter, left), maxLeft);
-    top = Math.min(Math.max(gutter, top), maxTop);
-    this.colorDialog.style.left = `${Math.round(left)}px`;
-    this.colorDialog.style.top = `${Math.round(top)}px`;
-    this.colorDialog.dataset.placement = placement;
   }
 
   _syncViewport() {
@@ -1687,16 +991,16 @@ export class RedlineOverlay {
       }
       this.textEditor.finish({ commit: true });
     }
-    this._trackSurface(event, true);
+    this.pointerProxy.trackSurface(event, true);
     // Placing the pointer takes any press; the proxy itself is above everything.
     const cursor = this.document.cursor;
     if (this.cursorPlacing) {
-      this._beginCursorDrag(event, point, { place: true });
+      this.pointerProxy.beginDrag(event, point, { place: true });
       return;
     }
     if (cursor?.visible && !this.gestures.hasPathDraft && (this.tool === 'select' || this.cursorSelected)
       && cursorHitTest(cursor, point, this._scale())) {
-      this._beginCursorDrag(event, point);
+      this.pointerProxy.beginDrag(event, point);
       return;
     }
     if (this.cursorSelected) {
@@ -1726,7 +1030,7 @@ export class RedlineOverlay {
 
   _onPointerMove(event) {
     if (!this.document || this.pageMode || this._busy) return;
-    this._trackSurface(event, false);
+    this.pointerProxy.trackSurface(event, false);
     const point = this._point(event);
     if (this._textPointerId === event.pointerId && this.textEditor.active) {
       this.textEditor.pointerDrag(point);
@@ -1940,452 +1244,23 @@ export class RedlineOverlay {
   }
 
   // ---------------------------------------------------------------------------
-  // Pointer proxy
+  // Pointer proxy (RedlineOverlayCursor.js)
 
   /** Include or leave out the pointer proxy. Returns true when that changed. */
-  setCursorIncluded(included) {
-    if (!this.document) return false;
-    const result = this._setCursorVisibility(included, { select: true });
-    if (result.message) this._setMessage(result.message);
-    this._render({ force: true });
-    return result.changed;
-  }
-
-  _setCursorVisibility(included, { select }) {
-    const doc = this.document;
-    if (!included) {
-      this.cursorPlacing = false;
-      this.cursorSelected = false;
-      if (!doc.cursor?.visible) return { changed: false, message: '' };
-      doc.setCursor({ ...doc.cursor, visible: false });
-      return { changed: true, message: 'Pointer left out of exports; its position is kept' };
-    }
-    if (doc.cursor?.visible) return { changed: false, message: '' };
-    const last = this._trail.last;
-    let message;
-    if (doc.cursor) {
-      doc.setCursor({ ...doc.cursor, visible: true });
-      message = 'Pointer included at its previous position — drag it or use arrow keys to adjust';
-    } else if (last) {
-      doc.setCursor(clampCursor({ visible: true, x: last.fx * doc.width, y: last.fy * doc.height }, doc.width, doc.height));
-      message = `Pointer included where you last ${last.reason === 'press' ? 'clicked' : 'paused'} — drag it or use arrow keys to adjust`;
-    } else if (select && this.active && !this.pageMode) {
-      this.startCursorPlacement();
-      return { changed: true, message: '' };
-    } else {
-      doc.setCursor({ visible: true, x: doc.width / 2, y: doc.height / 2 });
-      message = 'Pointer placed at the centre, since no pointer position was known — close the preview to move it';
-    }
-    if (select && this.active && !this.pageMode) {
-      this.cursorSelected = true;
-      this.legendSelected = false;
-      if (this.tool === 'select') this.selectedId = null;
-    }
-    return { changed: true, message };
-  }
-
-  /**
-   * Choose the pointer's position: the next press on the drawing surface puts
-   * its hotspot there (and may drag on), arrow keys move it, Enter or Escape
-   * finishes. Starts from the last meaningful position, or the centre.
-   */
-  startCursorPlacement() {
-    const doc = this.document;
-    if (!doc || !this.active || this.pageMode || this._busy) return false;
-    this.textEditor.finish({ commit: true });
-    this.legendEditor.commit({ focus: false });
-    this.gestures.cancel();
-    if (this.tool === 'crop') this.setTool(this._toolBeforeCrop);
-    const last = this._trail.last;
-    const start = doc.cursor ?? (last ? { x: last.fx * doc.width, y: last.fy * doc.height } : { x: doc.width / 2, y: doc.height / 2 });
-    doc.setCursor(clampCursor({ visible: true, x: start.x, y: start.y }, doc.width, doc.height));
-    this._placementFocus = this.root.getRootNode().activeElement;
-    this.cursorPlacing = true;
-    this.cursorSelected = true;
-    this.cursorFollow = false;
-    this.legendSelected = false;
-    if (this.tool === 'select') this.selectedId = null;
-    this.svg.focus({ preventScroll: true });
-    this._render({ force: true });
-    this._setMessage('Click where the pointer should point, or move it with arrow keys and press Enter');
-    this.options.setStatus('Placing the pointer: click where it should point, or use arrow keys and Enter.');
-    return true;
-  }
-
-  endCursorPlacement({ restoreFocus = false } = {}) {
-    if (!this.cursorPlacing) return false;
-    this.cursorPlacing = false;
-    const cursor = this.document?.cursor;
-    this._render({ force: true });
-    if (cursor) this._setMessage(`Pointer placed at ${Math.round(cursor.x)}, ${Math.round(cursor.y)}`);
-    if (restoreFocus) {
-      const target = this._placementFocus?.isConnected && this._placementFocus.checkVisibility?.() ? this._placementFocus : null;
-      target?.focus?.({ preventScroll: true });
-    }
-    this._placementFocus = null;
-    return true;
-  }
-
-  setCursorFollow(follow) {
-    this.cursorFollow = Boolean(follow);
-    this._render({ force: true });
-    this._setMessage(this.cursorFollow
-      ? 'Pointer follows: it moves to where you next click or pause over the page'
-      : 'Pointer frozen where it is');
-    return this.cursorFollow;
-  }
-
-  /** Move the pointer by screen pixels. Explicit moves freeze it. */
-  nudgeCursor(dx, dy) {
-    const doc = this.document;
-    if (!doc?.cursor?.visible) return false;
-    const scale = this._scale();
-    doc.setCursor(moveCursor(doc.cursor, dx / scale.x, dy / scale.y, doc.width, doc.height));
-    this.cursorFollow = false;
-    this._render({ force: true });
-    return true;
-  }
-
-  _beginCursorDrag(event, point, { place = false } = {}) {
-    const doc = this.document;
-    this.textEditor.finish({ commit: true });
-    this.legendEditor.commit({ focus: false });
-    const original = place ? clampCursor({ visible: true, x: point.x, y: point.y }, doc.width, doc.height) : doc.cursor;
-    this.cursorSelected = true;
-    this.cursorFollow = false;
-    this.legendSelected = false;
-    if (this.tool === 'select') this.selectedId = null;
-    this.svg.focus({ preventScroll: true });
-    if (this.gestures.cursorPointerDown(event, point, original)) this.svg.setPointerCapture?.(event.pointerId);
-    this._render({ force: true });
-  }
-
-  /** Record a drawing-surface position for the pointer trail. */
-  _trackSurface(event, press) {
-    if (!event.isTrusted) return;
-    const rect = this.svg.getBoundingClientRect();
-    const sample = { clientX: event.clientX - rect.left, clientY: event.clientY - rect.top, width: rect.width, height: rect.height };
-    if (press) this._trail.press(sample);
-    else this._trail.move(sample);
-  }
-
-  _onPagePointer(event) {
-    // Annotate mode reports positions from the drawing surface itself.
-    if ((this.active && !this.pageMode) || !event.isTrusted) return;
-    const rootNode = this.root.getRootNode();
-    const host = rootNode instanceof ShadowRoot ? rootNode.host : this.root;
-    if (event.composedPath().includes(host)) {
-      this._trail.leave();
-      return;
-    }
-    const sample = { clientX: event.clientX, clientY: event.clientY, width: window.innerWidth, height: window.innerHeight };
-    if (event.type === 'pointerdown') this._trail.press(sample);
-    else this._trail.move(sample);
-  }
-
-  /** Whether a pointer sample is a meaningful position for the proxy. */
-  _meaningfulPointer(sample) {
-    const doc = this.document;
-    if (!doc || !this.active || this.pageMode) return true;
-    if (this.tool === 'crop' || this.cursorPlacing || this.textEditor.active || this._dialogDepth > 0 || this._busy) return false;
-    if (this.gestures.pointer?.kind === 'cursor-move') return false;
-    const point = { x: sample.clientX / sample.width * doc.width, y: sample.clientY / sample.height * doc.height };
-    if (this.legendEditor.hitTest(point)) return false;
-    return !(doc.cursor?.visible && cursorHitTest(doc.cursor, point, this._scale()));
-  }
-
-  _onPointerTrail(position) {
-    const doc = this.document;
-    if (!this.cursorFollow || !doc?.cursor?.visible || this.gestures.pointer?.kind === 'cursor-move') return;
-    doc.setCursor(clampCursor({ visible: true, x: position.fx * doc.width, y: position.fy * doc.height }, doc.width, doc.height));
-    // Closed or in Browse mode nothing renders, so schedule the draft directly.
-    if (this.active && !this.pageMode) this._render();
-    else this._autosave?.schedule();
-  }
+  setCursorIncluded(included) { return this.pointerProxy.setIncluded(included); }
+  startCursorPlacement() { return this.pointerProxy.startPlacement(); }
+  endCursorPlacement(options) { return this.pointerProxy.endPlacement(options); }
+  setCursorFollow(follow) { return this.pointerProxy.setFollow(follow); }
+  nudgeCursor(dx, dy) { return this.pointerProxy.nudge(dx, dy); }
 
   // ---------------------------------------------------------------------------
-  // Reload recovery
+  // Reload recovery (RedlineOverlayRecovery.js)
 
-  _viewportContext() {
-    return {
-      width: window.innerWidth, height: window.innerHeight, devicePixelRatio: window.devicePixelRatio || 1,
-      scrollX: window.scrollX, scrollY: window.scrollY,
-    };
-  }
-
-  /** The draft for the current session, including explanation or text edits not yet saved. */
-  _draftSnapshot() {
-    const json = this.document.toJSON();
-    if (this.legendEditor.active) {
-      const id = this.legendEditor.editingId;
-      const text = this.legendEditor.input.value;
-      json.annotations = json.annotations.map(mark => {
-        if (mark.id !== id) return mark;
-        const { text: _previous, ...rest } = mark;
-        return text ? { ...rest, text } : rest;
-      });
-    }
-    if (this.textEditor.active) {
-      const editing = this.textEditor.mark;
-      const text = this.textEditor.element.value.trim();
-      if (editing && text) {
-        const next = { ...JSON.parse(JSON.stringify(editing)), text };
-        const index = json.annotations.findIndex(mark => mark.id === editing.id);
-        if (index >= 0) json.annotations[index] = next;
-        else json.annotations.push(next);
-      }
-    }
-    return buildDraft({
-      sessionId: this.sessionId, createdAt: this.sessionStartedAt, document: json,
-      viewport: this._viewportContext(), ui: { cursorFollow: this.cursorFollow },
-    });
-  }
-
-  /**
-   * The host reports that the page changed address within the same document.
-   * Drafts are keyed by address, so the session is saved again under the new
-   * one (immediately when `now`, as the page unloads).
-   */
-  noteAddressChanged({ now = false } = {}) {
-    if (!this._autosave || this._recovery.state !== 'idle' || this._recovery.paused) return;
-    this._autosave.addressChanged({ now });
-  }
-
-  _recoveryState() {
-    const recovery = this._recovery;
-    const pending = recovery.pending;
-    return {
-      available: Boolean(this._autosave) && recovery.state !== 'unavailable',
-      state: recovery.state,
-      paused: recovery.paused,
-      stored: recovery.stored,
-      // The prompt itself describes the draft; the notice appears once it is dismissed.
-      pending: pending && !this._promptingRecovery
-        ? { savedTime: pending.summary.savedTime, markCount: pending.summary.markCount, contents: pending.summary.contents } : null,
-    };
-  }
-
-  async _checkRecovery() {
-    const recovery = this._recovery;
-    recovery.state = 'checking';
-    this._autosave?.pause();
-    let stored;
-    try {
-      stored = await this.options.loadDraft();
-    } catch (error) {
-      console.warn('[Redline] Reload recovery is unavailable.', error);
-      recovery.state = 'unavailable';
-      this._setMessage(`Reload recovery is unavailable here: ${error?.message ?? error}`);
-      this._render({ force: true });
-      return;
-    }
-    let draft = null;
-    let doc = null;
-    if (stored) {
-      try {
-        draft = readDraft(stored);
-        doc = new RedlineDocument();
-        doc.load(draft.document, { prepare: snapshot => this._prepareRender(snapshot) });
-      } catch (error) {
-        console.warn('[Redline] Discarding an unreadable recovery draft.', error);
-        draft = null;
-        await Promise.resolve(this.options.discardDraft()).catch(() => {});
-        this._setMessage('An unreadable reload-recovery draft was discarded');
-      }
-    }
-    if (!draft || !draftHasContent(doc.toJSON())) {
-      recovery.state = 'idle';
-      recovery.stored = false;
-      this._autosave.assume({ stored: false });
-      this._autosave.resume();
-      this._render({ force: true });
-      return;
-    }
-    recovery.state = 'pending';
-    recovery.stored = true;
-    recovery.pending = { draft, doc, summary: describeDraft(draft, doc, this._viewportContext()) };
-    this._autosave.assume({ stored: true });
-    this._render({ force: true });
-    if (this._canPromptRecovery()) await this._promptRecovery();
-    else this._setMessage(`A draft saved at ${recovery.pending.summary.savedTime} is waiting — Restore or Discard it`);
-  }
-
-  _canPromptRecovery() {
-    return this._recovery.state === 'pending' && Boolean(this.options.requestRecovery) && !this._promptingRecovery
-      && this.active && !this.pageMode && !this._busy && this._dialogDepth === 0
-      && !this.textEditor.active && !this.legendEditor.active && !this.gestures.pointer && !this.gestures.draft
-      && !draftHasContent(this.document?.toJSON());
-  }
-
-  async _promptRecovery() {
-    const pending = this._recovery.pending;
-    if (!pending) return;
-    this._promptingRecovery = true;
-    this._render({ force: true });
-    let result;
-    try {
-      const summary = describeDraft(pending.draft, pending.doc, this._viewportContext());
-      result = await this._withChildDialog(() => this.options.requestRecovery(summary));
-    } finally {
-      this._promptingRecovery = false;
-    }
-    if (this._recovery.pending !== pending) {
-      this._render({ force: true });
-      return;
-    }
-    if (result?.choice === 'restore') {
-      await this.restoreDraft({ scroll: result.scroll, confirmed: true });
-    } else if (result?.choice === 'discard') {
-      await this.discardDraft({ confirmed: true });
-    } else {
-      this._setMessage('Draft kept — Restore or Discard it from this strip');
-      this.options.setStatus('Redline draft kept for later. New marks are not saved for reload recovery until you restore or discard it.');
-      this._render({ force: true });
-    }
-  }
-
-  /** Restore the waiting draft, replacing the current document (after confirmation if it has marks). */
-  async restoreDraft({ scroll = false, confirmed = false } = {}) {
-    const pending = this._recovery.state === 'pending' ? this._recovery.pending : null;
-    if (!pending || this._busy) return false;
-    const current = this.document?.toJSON();
-    if (!confirmed && (draftHasContent(current) || this.textEditor.active || this.legendEditor.active)) {
-      const count = current?.annotations.length ?? 0;
-      const ok = await this._withChildDialog(() => this.options.confirm({
-        title: 'Replace the current marks?',
-        message: `Restoring the draft saved at ${pending.summary.savedTime} replaces the ${count} mark${count === 1 ? '' : 's'} now open. Undo cannot bring them back; download JSON first to keep them.`,
-        confirmLabel: 'Replace',
-      }));
-      if (!ok || this._recovery.pending !== pending) return false;
-    }
-    this.cropView.cancel();
-    this.textEditor.finish({ commit: false });
-    this.legendEditor.cancel({ focus: false });
-    this.gestures.cancel();
-    if (!this.document) this.document = new RedlineDocument();
-    try {
-      this.document.load(pending.draft.document, { prepare: snapshot => this._prepareRender(snapshot) });
-    } catch (error) {
-      this._reportError(error, 'Could not restore the draft');
-      return false;
-    }
-    this.sessionStartedAt = pending.draft.createdAt;
-    this.cursorFollow = pending.draft.ui?.cursorFollow === true;
-    this.selectedId = null;
-    this.legendSelected = false;
-    this.cursorSelected = false;
-    this.cursorPlacing = false;
-    this._bulletLimit = null;
-    this._documentToken += 1;
-    this._recovery.state = 'idle';
-    this._recovery.pending = null;
-    if (scroll) window.scrollTo(pending.draft.viewport.scrollX, pending.draft.viewport.scrollY);
-    this._autosave.resume();
-    // Save at once, so this session takes over the restored draft's entry
-    // before any navigation could leave the old one behind.
-    this._autosave.schedule();
-    this._autosave.flush();
-    this._syncViewport();
-    this._render({ force: true });
-    const count = this.document.marks.length;
-    const message = `Restored ${count} mark${count === 1 ? '' : 's'} saved at ${pending.summary.savedTime}. Marks keep their screen positions; adjust them if the page moved.`;
-    this._setMessage(message);
-    this.options.setStatus(message);
-    return true;
-  }
-
-  /**
-   * Discard the waiting draft, or, with none waiting, the current session's
-   * stored draft, which also pauses reload recovery until resumed so the next
-   * change does not store it again.
-   */
-  async discardDraft({ confirmed = false } = {}) {
-    if (!this._autosave || this._busy) return false;
-    const pending = this._recovery.state === 'pending' ? this._recovery.pending : null;
-    if (!confirmed) {
-      const ok = await this._withChildDialog(() => this.options.confirm(pending ? {
-        title: 'Discard the waiting draft?',
-        message: `Delete the draft saved at ${pending.summary.savedTime} (${pending.summary.contents}) It cannot be recovered afterwards.`,
-        confirmLabel: 'Discard',
-      } : {
-        title: 'Discard the recovery draft?',
-        message: 'Delete the reload-recovery copy of these marks? They stay open now, but reload recovery stays off for this page until you resume it.',
-        confirmLabel: 'Discard',
-      }));
-      if (!ok || (pending && this._recovery.pending !== pending)) return false;
-    }
-    const wasPaused = this._autosave.paused;
-    this._autosave.pause();
-    this._setBusy(true, 'Discarding the recovery draft…');
-    try {
-      const result = await this._autosave.discard();
-      if (result?.ok === false) {
-        // A failed deletion must keep Restore available and must not be reported
-        // as a successful discard. Resume existing autosaving only if it was on.
-        if (!wasPaused) {
-          this._autosave.resume();
-          this._autosave.schedule();
-        }
-        return false;
-      }
-      let message;
-      if (pending) {
-        this._recovery.state = 'idle';
-        this._recovery.pending = null;
-        // Marks drawn while the decision was pending are saved from now on.
-        this._autosave.resume();
-        this._autosave.schedule();
-        message = 'Draft discarded';
-      } else {
-        this._recovery.paused = true;
-        message = 'Recovery draft discarded; reload recovery is paused for this page until you resume it';
-      }
-      this._recovery.stored = false;
-      this._setMessage(message);
-      this.options.setStatus(message);
-      return true;
-    } finally {
-      this._setBusy(false);
-    }
-  }
-
-  resumeRecovery() {
-    if (!this._autosave || !this._recovery.paused) return false;
-    this._recovery.paused = false;
-    if (this._recovery.state !== 'pending') {
-      this._autosave.resume();
-      this._autosave.schedule();
-    }
-    this._setMessage('Reload recovery resumed');
-    this._render({ force: true });
-    return true;
-  }
-
-  _onDraftResult(result) {
-    const recovery = this._recovery;
-    const before = recovery.stored;
-    if (result.ok) recovery.stored = result.operation === 'save';
-    if (!result.ok) {
-      const messages = {
-        quota: 'Reload recovery could not save: the extension’s session storage is full. Your marks are still open; download JSON to keep them.',
-        'too-large': 'This session is too large for reload recovery. Your marks are still open; download JSON to keep them.',
-      };
-      const message = result.operation === 'discard'
-        ? `Could not discard the recovery draft (${result.error ?? result.code}). It is still kept and may be offered after reload; try again.`
-        : messages[result.code]
-          ?? `Reload recovery could not save (${result.error ?? result.code}). Your marks are still open; download JSON to keep them.`;
-      const failure = `${result.operation}:${result.code}`;
-      this._setMessage(message);
-      if (recovery.failure !== failure) {
-        recovery.failure = failure;
-        this.options.setStatus(message);
-      }
-    } else if (result.ok && recovery.failure) {
-      recovery.failure = null;
-      this._setMessage('Reload recovery is saving again');
-    }
-    if (before !== recovery.stored && this.active) this._render({ force: true });
-  }
+  /** The host reports a same-document address change; the draft follows it. */
+  noteAddressChanged(options) { this.recovery.noteAddressChanged(options); }
+  restoreDraft(options) { return this.recovery.restore(options); }
+  discardDraft(options) { return this.recovery.discard(options); }
+  resumeRecovery() { return this.recovery.resume(); }
 
   _onTextEditFinished({ mark, preview, creating, commit, text }) {
     const saved = commit && (Boolean(text) || (!creating && mark.type === 'textbox'));
@@ -2520,138 +1395,23 @@ export class RedlineOverlay {
   }
 
   _loadPreferences(saved) {
-    if (!saved || typeof saved !== 'object') return;
-    const d = this.defaults;
-    const unit = value => Number.isFinite(value) && value >= 0 && value <= 1;
-    if (saved.tool !== 'crop' && Object.hasOwn(TOOL_INFO, saved.tool)) this.tool = saved.tool;
-    if (isHexColor(saved.color)) d.color = saved.color;
-    if (isHexColor(saved.fill)) d.fill = saved.fill;
-    if (unit(saved.fillOpacity)) d.fillOpacity = saved.fillOpacity;
-    if (isHexColor(saved.savedFill?.color) && unit(saved.savedFill?.opacity) && saved.savedFill.opacity > 0) {
-      d.savedFill = { color: saved.savedFill.color, opacity: saved.savedFill.opacity };
-    }
-    if (unit(saved.lastFillOpacity) && saved.lastFillOpacity > 0) d.lastFillOpacity = saved.lastFillOpacity;
-    if (unit(saved.strokeOpacity)) d.strokeOpacity = saved.strokeOpacity;
-    if (saved.outline === false && d.fillOpacity > 0) d.outline = false;
-    if (typeof saved.intent === 'string' && saved.intent) d.intent = saved.intent.slice(0, 32);
-    if (saved.noteMarker === 'alpha' || saved.noteMarker === 'numeric') d.noteMarker = saved.noteMarker;
-    if (saved.bulletScheme === 'alpha' || saved.bulletScheme === 'numeric') d.bulletScheme = saved.bulletScheme;
-    if (typeof saved.legendVisible === 'boolean') d.legendVisible = saved.legendVisible;
-    if (Number.isFinite(saved.width) && saved.width >= 1 / 3) d.width = saved.width;
-    if (Number.isFinite(saved.brushWidth) && saved.brushWidth > 0) d.brushWidth = saved.brushWidth;
-    if (unit(saved.brushOpacity)) d.brushOpacity = saved.brushOpacity;
-    // Old preferences described an opaque dark backing. Start the paper style
-    // translucent once, then retain any new opacity the user explicitly chooses.
-    if (saved.textBoxAppearance === 'paper' && unit(saved.textBoxBackgroundOpacity)) d.textBoxBackgroundOpacity = saved.textBoxBackgroundOpacity;
-    if (Number.isFinite(saved.textBoxFontSize) && saved.textBoxFontSize >= 10 && saved.textBoxFontSize <= 96) d.fontSize = saved.textBoxFontSize;
-    if (typeof saved.textFontFamily === 'string' && saved.textFontFamily.trim()) d.fontFamily = saved.textFontFamily.trim().slice(0, 160);
-    if (isHexColor(saved.textColor)) d.textColor = saved.textColor;
-    if (typeof saved.textBold === 'boolean') d.bold = saved.textBold;
-    if (typeof saved.textItalic === 'boolean') d.italic = saved.textItalic;
-    if (typeof saved.textUnderline === 'boolean') d.underline = saved.textUnderline;
-    if (['left', 'center', 'right'].includes(saved.textAlign)) d.textAlign = saved.textAlign;
-    if (['top', 'middle', 'bottom'].includes(saved.verticalAlign)) d.verticalAlign = saved.verticalAlign;
-    for (const tool of ['line', 'arrow', 'polyline']) {
-      if (validEnds(saved[`${tool}Ends`])) d.ends[tool] = { start: saved[`${tool}Ends`].start, end: saved[`${tool}Ends`].end };
-    }
-    this.toolbarPinned = saved.toolbarPinned === true;
-    if (Number.isFinite(saved.toolbarPosition?.left) && Number.isFinite(saved.toolbarPosition?.top)) {
-      this.toolbarPosition = { left: 8, top: saved.toolbarPosition.top };
+    const { tool, toolbarPinned, toolbarPosition } = readPreferences(saved, this.defaults, { isTool: name => Object.hasOwn(TOOL_INFO, name) });
+    if (tool) this.tool = tool;
+    if (saved && typeof saved === 'object') {
+      this.dock.pinned = toolbarPinned;
+      if (toolbarPosition) this.dock.position = toolbarPosition;
     }
   }
 
   _savePreferences() {
-    const d = this.defaults;
-    const preferences = {
+    const preferences = writePreferences(this.defaults, {
       tool: this.tool === 'crop' ? this._toolBeforeCrop : this.tool,
-      color: d.color, width: d.width, fill: d.fill, fillOpacity: d.fillOpacity, outline: d.outline,
-      savedFill: d.savedFill ? { ...d.savedFill } : null,
-      lastFillOpacity: d.lastFillOpacity, strokeOpacity: d.strokeOpacity, intent: d.intent, noteMarker: d.noteMarker,
-      bulletScheme: d.bulletScheme, legendVisible: d.legendVisible,
-      brushWidth: d.brushWidth, brushOpacity: d.brushOpacity,
-      textBoxBackgroundOpacity: d.textBoxBackgroundOpacity, textBoxFontSize: d.fontSize,
-      textFontFamily: d.fontFamily, textColor: d.textColor, textBold: d.bold,
-      textItalic: d.italic, textUnderline: d.underline, textAlign: d.textAlign, verticalAlign: d.verticalAlign,
-      textBoxAppearance: 'paper',
-      lineEnds: { ...d.ends.line }, arrowEnds: { ...d.ends.arrow }, polylineEnds: { ...d.ends.polyline },
-      toolbarPinned: this.toolbarPinned,
-      toolbarPosition: this.toolbarPosition ? { ...this.toolbarPosition } : null,
-    };
+      toolbarPinned: this.dock.pinned,
+      toolbarPosition: this.dock.position,
+    });
     this._preferenceSave = this._preferenceSave
       .then(() => this.options.savePreferences(preferences))
       .catch(error => console.warn('[Redline] Could not save preferences.', error));
-  }
-
-  _applyToolbarPosition() {
-    const dock = this.toolbarUI.dock;
-    dock.toggleAttribute('data-pinned', this.toolbarPinned);
-    if (!this.toolbarPosition) {
-      dock.removeAttribute('data-positioned');
-      dock.style.removeProperty('left');
-      dock.style.removeProperty('top');
-    } else {
-      dock.dataset.positioned = '';
-      dock.style.left = `${this.toolbarPosition.left}px`;
-      dock.style.top = `${this.toolbarPosition.top}px`;
-      this._clampToolbarPosition();
-    }
-    this.toolbarUI.positionContext();
-    this.toolbarUI.menus.forEach(menu => menu.position());
-    this._render();
-  }
-
-  _clampToolbarPosition() {
-    const dock = this.toolbarUI.dock;
-    if (!this.toolbarPosition || !dock.isConnected) return;
-    const gutter = 8;
-    const rect = this.toolbarUI.bar.getBoundingClientRect();
-    const left = gutter;
-    const top = Math.min(Math.max(gutter, this.toolbarPosition.top), Math.max(gutter, window.innerHeight - rect.height - gutter));
-    this.toolbarPosition = { left, top };
-    dock.style.left = `${left}px`;
-    dock.style.top = `${top}px`;
-  }
-
-  _onToolbarPointerDown(event) {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const rect = this.toolbarUI.dock.getBoundingClientRect();
-    this._toolbarDrag = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      left: rect.left,
-      top: rect.top,
-    };
-    this.grip.setPointerCapture?.(event.pointerId);
-  }
-
-  _onToolbarPointerMove(event) {
-    if (this._toolbarDrag?.pointerId !== event.pointerId) return;
-    this.toolbarPinned = false;
-    this.toolbarPosition = {
-      left: 8,
-      top: this._toolbarDrag.top + event.clientY - this._toolbarDrag.startY,
-    };
-    this._applyToolbarPosition();
-  }
-
-  _onToolbarPointerUp(event, cancelled = false) {
-    if (this._toolbarDrag?.pointerId !== event.pointerId) return;
-    this.grip.releasePointerCapture?.(event.pointerId);
-    if (cancelled) this.toolbarPosition = null;
-    else this._clampToolbarPosition();
-    this._toolbarDrag = null;
-    this._savePreferences();
-    this._applyToolbarPosition();
-  }
-
-  _toggleToolbarPin() {
-    this.toolbarPinned = !this.toolbarPinned;
-    if (this.toolbarPinned) this.toolbarPosition = null;
-    this._savePreferences();
-    this._applyToolbarPosition();
-    this.options.setStatus(this.toolbarPinned ? 'Full-width strip pinned to the top.' : 'Strip unpinned. Drag the grip to move it vertically.');
   }
 
   _onKeyUp(event) {
@@ -2659,145 +1419,7 @@ export class RedlineOverlay {
     if (event.key === 'Shift') this.gestures.modifiersChanged(false);
   }
 
-  _onKeyDown(event) {
-    if (!this.active || this.pageMode || this._dialogDepth > 0) return;
-    // [extension patch] Listen inside the root and inspect the original target,
-    // including when that root is closed to the surrounding page.
-    const target = event.composedPath?.()[0] ?? event.target;
-    if (this._busy) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return;
-    }
-    if (target === this.textEditor.element || this.legendEditor.owns(target)) return;
-    const handled = () => {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-    };
-    const menu = this.toolbarUI.menuContaining(target);
-    if (menu) {
-      if (event.key !== 'Tab') return;
-      menu.close({ focusTrigger: false });
-      menu.trigger.focus({ preventScroll: true });
-    }
-    if (event.key === 'Shift') {
-      this.gestures.modifiersChanged(true);
-      return;
-    }
-    if (this.cropView.handleKey(event, target)) return handled();
-    if (event.key === 'Escape') {
-      if (this.toolbarUI.closeMenus()) return handled();
-      if (this.gestures.cancel()) {
-        this._setMessage('Unfinished mark cancelled');
-        return handled();
-      }
-      // An explanation edit whose focus moved to one of its own controls.
-      if (this.legendEditor.cancel()) return handled();
-      if (this.cursorPlacing) {
-        this.endCursorPlacement({ restoreFocus: true });
-        return handled();
-      }
-      if (this.cursorSelected) {
-        this.cursorSelected = false;
-        this._render({ force: true });
-        return handled();
-      }
-      // Otherwise let the native modal dialog dispatch its cancel event.
-      return undefined;
-    }
-    const editable = target?.matches?.('input, textarea, select, [contenteditable="true"]');
-    if (event.key === 'Enter' && this.cursorPlacing && !target?.matches?.('button, select, input, textarea, summary')) {
-      this.endCursorPlacement({ restoreFocus: true });
-      return handled();
-    }
-    if (event.key === 'Enter' && this.gestures.hasPathDraft && !target?.matches?.('button, select, input, textarea')) {
-      this.gestures.finishPath();
-      return handled();
-    }
-    // Chromium may move reverse-Tab from the first control into browser chrome
-    // even for a modal dialog. Keep the toolbar's keyboard loop deterministic.
-    if (event.key === 'Tab') {
-      const focusable = [...this.root.querySelectorAll('button, input, select, summary, textarea, [tabindex]')]
-        .filter(element => element.tabIndex >= 0 && !element.matches(':disabled')
-          && !element.closest('[hidden], [inert]')
-          && element.checkVisibility({ visibilityProperty: true }));
-      if (focusable.length) {
-        // [extension patch] shadow-aware: document.activeElement is the host, not the button.
-        const index = focusable.indexOf(this.root.getRootNode().activeElement);
-        const next = event.shiftKey
-          ? (index <= 0 ? focusable.at(-1) : focusable[index - 1])
-          : (index < 0 || index === focusable.length - 1 ? focusable[0] : focusable[index + 1]);
-        next.focus();
-        handled();
-      }
-      return undefined;
-    }
-    const ctrl = event.ctrlKey || event.metaKey;
-    const key = event.key.toLowerCase();
-    if (ctrl && key === 'z' && event.shiftKey) return (this.redo(), handled());
-    if (ctrl && key === 'z') return (this.undo(), handled());
-    if (ctrl && key === 'y') return (this.redo(), handled());
-    if (ctrl && key === 'd' && !editable && this.tool === 'select' && this.selectedId) {
-      this.duplicateSelected();
-      return handled();
-    }
-    if (editable) return undefined;
-    const selectedMark = this.tool === 'select' && this.selectedId ? this.document?.find(this.selectedId) : null;
-    // V is the selection-mode toggle while a point path is selected. Once a
-    // text edit is active the native editor owns V like any other character.
-    if (!ctrl && !event.altKey && !event.shiftKey && key === 'v' && DIRECT_SELECTION_TYPES.has(selectedMark?.type)) {
-      this.setSelectionMode(this.selectionMode === 'direct' ? 'object' : 'direct');
-      return handled();
-    }
-    if (event.key === 'Enter' && !ctrl && selectedMark?.type === 'bullet' && !target?.matches?.('button, select, input, textarea, summary')) {
-      this.editExplanation(selectedMark.id);
-      return handled();
-    }
-    if (event.key === 'Enter' && !ctrl && TEXT_CONTAINER_TYPES.has(selectedMark?.type) && target === this.svg) {
-      this._startDirectTextEdit(selectedMark);
-      return handled();
-    }
-    if (!ctrl && !event.altKey && !event.metaKey && !event.isComposing && event.key.length === 1
-      && TEXT_CONTAINER_TYPES.has(selectedMark?.type) && target === this.svg) {
-      this._startDirectTextEdit(selectedMark, { initialText: event.key });
-      return handled();
-    }
-    if (!ctrl && (event.key === 'Delete' || event.key === 'Backspace')) {
-      if (this.gestures.hasPathDraft) this.gestures.removeLastPathPoint();
-      else if (this.selectionMode === 'direct' && this.selectedVertex !== null) this.removeSelectedVertex();
-      else if (this.cursorSelected && this.document?.cursor?.visible) this.setCursorIncluded(false);
-      else this.removeSelected();
-      return handled();
-    }
-    const direction = NUDGE_KEYS[event.key];
-    const inControls = target?.closest?.('[data-redline-context], [data-redline-crop-panel], [data-redline-text-controls]');
-    const cursorMovable = (this.cursorSelected || this.cursorPlacing) && this.document?.cursor?.visible;
-    if (direction && !ctrl && !event.altKey && cursorMovable && !inControls) {
-      const step = event.shiftKey ? 10 : 1;
-      this.nudgeCursor(direction[0] * step, direction[1] * step);
-      return handled();
-    }
-    const legendMovable = this.legendSelected && this.document?.legend?.visible && !this.selectedId;
-    if (direction && !ctrl && !event.altKey && ((this.tool === 'select' && this.selectedId) || legendMovable) && !inControls) {
-      const step = event.shiftKey ? 10 : 1;
-      this.nudgeSelected(direction[0] * step, direction[1] * step);
-      return handled();
-    }
-    if (!ctrl && !event.altKey && !event.shiftKey && key === 'v') {
-      this.setTool('select');
-      this.selectionMode = 'object';
-      this.selectedVertex = null;
-      return handled();
-    }
-    if (!ctrl && !event.altKey && !event.shiftKey && TOOL_KEYS[key]) {
-      const focusedTool = target?.closest?.('[data-redline-tool]');
-      this.setTool(TOOL_KEYS[key]);
-      // Keep the focus ring on the tool that is now active, not the previous one.
-      if (focusedTool) this.toolbarUI.toolFocusTarget(this.tool)?.focus({ preventScroll: true });
-      return handled();
-    }
-    return undefined;
-  }
+  _onKeyDown(event) { handleOverlayKeyDown(this, event); }
 
   _render({ force = false } = {}) {
     if (!this.document) return;
@@ -2834,12 +1456,11 @@ export class RedlineOverlay {
       selectedVertex: this.selectedVertex,
     });
     this.cropView.sync(doc, this.tool === 'crop');
-    const recovery = this._recovery;
     const key = [
-      this.tool, this.pageMode, Boolean(this._busy), this.toolbarPinned, doc.canUndo, doc.canRedo,
+      this.tool, this.pageMode, Boolean(this._busy), this.dock.pinned, doc.canUndo, doc.canRedo,
       this.selectedId, this._defaultsVersion, this.active, this.legendSelected, this.legendEditor.editingId,
       this.legendEditor.mode, this._bulletLimit?.message, this.cursorSelected, this.cursorPlacing, this.cursorFollow,
-      Boolean(doc.cursor?.visible), recovery.state, recovery.paused, recovery.stored, Boolean(recovery.pending),
+      Boolean(doc.cursor?.visible), this.recovery.renderKey(),
     ].join('|');
     const changed = doc.marks !== this._syncedMarks || doc.legend !== this._syncedLegend;
     if (force || key !== this._syncKey || changed) {
@@ -2853,36 +1474,12 @@ export class RedlineOverlay {
     }
     // The editor uses the final toolbar bounds to keep the caret unobscured.
     this.legendEditor.render();
-    this._renderCursor();
+    this.pointerProxy.render();
     const draftKey = `${doc.revision}|${this._documentToken}|${this.cursorFollow}`;
     if (draftKey !== this._draftKey) {
       this._draftKey = draftKey;
-      this._autosave?.schedule();
+      this.recovery.schedule();
     }
-  }
-
-  /** The pointer proxy and, when selected, its frame. Rebuilt only when it changes. */
-  _renderCursor() {
-    const doc = this.document;
-    const cursor = this.gestures.liveCursor ?? doc.cursor;
-    const selected = Boolean(cursor?.visible && (this.cursorSelected || this.cursorPlacing));
-    const scale = this._scale();
-    this.svg.toggleAttribute('data-placing', this.cursorPlacing);
-    const key = [cursor?.visible, cursor?.x, cursor?.y, selected, this.cursorPlacing, scale.x, scale.y].join('|');
-    if (key === this._cursorKey) return;
-    this._cursorKey = key;
-    this.cursorLayer.replaceChildren();
-    if (!cursor?.visible) return;
-    this.cursorLayer.appendChild(renderPrimitives(cursorPrimitives(cursor), { 'data-redline-cursor': '' }));
-    if (!selected) return;
-    const box = cursorBounds(cursor);
-    const padX = 5 / scale.x;
-    const padY = 5 / scale.y;
-    this.cursorLayer.appendChild(svgElement('rect', {
-      'data-redline-selection': '', 'data-redline-selection-for': 'cursor',
-      x: box.x - padX, y: box.y - padY, width: box.width + padX * 2, height: box.height + padY * 2,
-      'vector-effect': 'non-scaling-stroke',
-    }));
   }
 
   _syncToolbar() {
@@ -2891,7 +1488,7 @@ export class RedlineOverlay {
       tool: this.tool,
       pageMode: this.pageMode,
       busy: Boolean(this._busy),
-      pinned: this.toolbarPinned,
+      pinned: this.dock.pinned,
       canUndo: Boolean(doc?.canUndo),
       canRedo: Boolean(doc?.canRedo),
       count: doc?.marks.length ?? 0,
@@ -2899,7 +1496,7 @@ export class RedlineOverlay {
       selectionMode: this.selectionMode,
       subject: this._subject(),
       cursor: { included: Boolean(doc?.cursor?.visible), placing: this.cursorPlacing, follow: this.cursorFollow },
-      recovery: this._recoveryState(),
+      recovery: this.recovery.toolbarState(),
     });
     for (const control of this.cropView.panel.querySelectorAll('button, select, input')) control.disabled = Boolean(this._busy);
   }
@@ -2931,31 +1528,5 @@ export class RedlineOverlay {
     console.error('[Redline]', error);
     this._setMessage(`${prefix}: ${error.message}`);
     this.options.setStatus(`Redline: ${prefix.toLowerCase()} — ${error.message}`);
-  }
-
-  async _captureBaseImage(captureOptions = {}) {
-    return captureBaseImage({
-      capturePage: this.options.capturePage,
-      captureFallback: this.options.captureFallback,
-      whileHidden: callback => this._whileHidden(callback),
-      captureOptions,
-    });
-  }
-
-  async _whileHidden(callback) {
-    // Top-layer dialogs have their own visible style; hiding the shadow host
-    // alone does not hide their painted surfaces.
-    const nodes = [this.root, ...this.options.mount.querySelectorAll(
-      'dialog[data-dialog="redline-color"][open], dialog[data-redline-preview][open], dialog[data-redline-eyedropper][open]',
-    )];
-    const prior = nodes.map(node => [node, node.style.getPropertyValue('visibility'), node.style.getPropertyPriority('visibility')]);
-    for (const node of nodes) node.style.setProperty('visibility', 'hidden', 'important');
-    try { return await callback(); }
-    finally {
-      for (const [node, value, priority] of prior) {
-        if (value) node.style.setProperty('visibility', value, priority);
-        else node.style.removeProperty('visibility');
-      }
-    }
   }
 }

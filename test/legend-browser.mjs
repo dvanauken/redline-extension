@@ -1,15 +1,15 @@
 /**
- * Phase 2 acceptance: 1–9 / A–Z bullets, label exhaustion, legacy notes, the
+ * Bullets and legend: 1–9 / A–Z bullets, label exhaustion, legacy notes, the
  * optional legend and its Canvas-rendered explanation editor, through real
  * pointer and keyboard input at DPR 2 (full) and DPR 1 (editing, parity and
  * scaling).
  *
- *   node test/phase2-browser.mjs [--headed]
+ *   node test/legend-browser.mjs [--headed]
  *
  * Click targets inside the canvas legend are computed by importing the
  * extension's own DOM-free layout module into the DevTools test world, so
  * they use the same code and font metrics as the editor. Production code gains
- * no hooks. Screenshots go to test-artifacts/phase2.
+ * no hooks. Screenshots go to test-artifacts/legend.
  *
  * Clipboard shortcuts here use Chromium's in-browser clipboard, and
  * composition uses DevTools Input.imeSetComposition; neither is a real
@@ -19,11 +19,11 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { createChecker, launch, openRedline, startServer, waitUntil } from './harness.mjs';
 
-const SHOTS = path.join('test-artifacts', 'phase2');
+const SHOTS = path.join('test-artifacts', 'legend');
 await fs.mkdir(SHOTS, { recursive: true });
 const { results, check } = createChecker();
 const { server, origin } = await startServer({
-  '/plain': '<!doctype html><html><head><title>Phase 2 fixture</title></head><body style="margin:0;background:#FFFFFF">'
+  '/plain': '<!doctype html><html><head><title>Legend fixture</title></head><body style="margin:0;background:#FFFFFF">'
     + '<button id="page-button" style="position:absolute;left:600px;top:740px;font:16px sans-serif">Page button</button></body></html>',
 });
 
@@ -894,7 +894,7 @@ async function run(dpr, { full }) {
       const { demoDocument } = await import('./demo-document.mjs');
       await load('legacy-demo', demoDocument().document);
       doc = await exportJSON('legacy-demo');
-      check('a Phase 1 document with no legend loads, stays legend-free and serialises without a legend field',
+      check('a document from before legends loads, stays legend-free and serialises without a legend field',
         !('legend' in doc) && (await state()).canvas === 'Legend hidden' && doc.annotations.length === demoDocument().document.annotations.length);
 
       // -----------------------------------------------------------------------

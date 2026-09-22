@@ -34,13 +34,34 @@ const quotaError = error => /quota/i.test(String(error?.message ?? error));
 export function createDraftStore({ storage, subtle, getRandomValues, now = () => Date.now() }) {
   let queue = Promise.resolve();
   let hmacKey = null;
+  /**
+   * Storage key → { tabId, sessionId, savedAt } of every stored draft. Read
+   * from storage once, then kept in step with each write this store makes (it
+   * is the only writer of draft keys), so a save need not read every draft.
+   */
+  let index = null;
 
-  /** Run storage operations one at a time, so a discard can never interleave with a write. */
+  /**
+   * Run storage operations one at a time, so a discard can never interleave
+   * with a write. After a failure the index may be out of step with storage,
+   * so it is read again next time.
+   */
   const serial = task => {
-    const run = queue.then(task);
+    const run = queue.then(task).catch(error => {
+      index = null;
+      throw error;
+    });
     queue = run.catch(() => {});
     return run;
   };
+
+  const summary = ({ tabId, sessionId, savedAt }) => ({ tabId, sessionId, savedAt });
+
+  async function removeNames(names) {
+    if (!names.length) return;
+    await storage.remove(names);
+    for (const name of names) index?.delete(name);
+  }
 
   async function key() {
     if (hmacKey) return hmacKey;
@@ -60,11 +81,15 @@ export function createDraftStore({ storage, subtle, getRandomValues, now = () =>
 
   const storageKey = (tabId, page) => `${DRAFT_KEY_PREFIX}${tabId}:${page}`;
 
+  /** Every stored draft as { name, value: { tabId, sessionId, savedAt } }. */
   async function records() {
-    const all = await storage.get(null);
-    return Object.entries(all)
-      .filter(([name, value]) => name.startsWith(DRAFT_KEY_PREFIX) && isObject(value))
-      .map(([name, value]) => ({ name, value }));
+    if (!index) {
+      const all = await storage.get(null);
+      index = new Map(Object.entries(all)
+        .filter(([name, value]) => name.startsWith(DRAFT_KEY_PREFIX) && isObject(value))
+        .map(([name, value]) => [name, summary(value)]));
+    }
+    return [...index].map(([name, value]) => ({ name, value }));
   }
 
   function checkRequest(tabId, url) {
@@ -106,13 +131,15 @@ export function createDraftStore({ storage, subtle, getRandomValues, now = () =>
         const removals = [...moved, ...evicted].map(item => item.name);
         // Keep every last good draft until the replacement is durably stored.
         // At quota, report failure rather than deleting drafts to make room.
+        const record = { tabId, sessionId: draft.sessionId, savedAt: now(), chars, draft };
         try {
-          await storage.set({ [name]: { tabId, sessionId: draft.sessionId, savedAt: now(), chars, draft } });
+          await storage.set({ [name]: record });
         } catch (error) {
           if (quotaError(error)) return { ok: false, code: 'quota', error: String(error?.message ?? error) };
           throw error;
         }
-        if (removals.length) await storage.remove(removals);
+        index?.set(name, summary(record));
+        await removeNames(removals);
         return { ok: true, evicted: evicted.length };
       });
     },
@@ -127,7 +154,7 @@ export function createDraftStore({ storage, subtle, getRandomValues, now = () =>
             if (item.value.tabId === tabId && item.value.sessionId === sessionId && !names.includes(item.name)) names.push(item.name);
           }
         }
-        await storage.remove(names);
+        await removeNames(names);
         return { ok: true };
       });
     },
@@ -135,7 +162,7 @@ export function createDraftStore({ storage, subtle, getRandomValues, now = () =>
     removeTab(tabId) {
       return serial(async () => {
         const names = (await records()).filter(item => item.value.tabId === tabId).map(item => item.name);
-        if (names.length) await storage.remove(names);
+        await removeNames(names);
         return { ok: true, removed: names.length };
       });
     },

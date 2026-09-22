@@ -1,6 +1,6 @@
-/** Lead regressions: closing child dialogs/capture and failed recovery operations. */
+/** Regressions: closing child dialogs/capture and failed recovery operations. */
 import { createChecker, launch, openRedline, startServer, waitUntil } from './harness.mjs';
-import { bullet, helpers, html, setCaptureDelay } from './phase3-helpers.mjs';
+import { bullet, helpers, html, setCaptureDelay } from './ui-helpers.mjs';
 const { check, results } = createChecker();
 const { server, origin } = await startServer({ '/review': html('Lead recovery review', '#FFFFFF') });
 const { context, worker, scratch } = await launch();
@@ -129,5 +129,5 @@ try {
   await context.close();
   await new Promise(resolve => server.close(resolve));
 }
-console.log(`${results.filter(result => result.pass).length}/${results.length} Phase 3 lead-review checks passed`);
+console.log(`${results.filter(result => result.pass).length}/${results.length} closing and recovery failure checks passed`);
 process.exitCode = results.every(result => result.pass) ? 0 : 1;

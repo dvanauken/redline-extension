@@ -547,7 +547,14 @@ main.js               host integration — shadow root, adapters, one overlay
 host-dialogs.js       native <dialog> note entry, confirmations and the Restore/Discard prompt
 color-picker.js       plain-element colour control (see "custom elements" below)
 redline/
-  RedlineOverlay.js     orchestration: lifecycle, selection, defaults, keyboard, pointer, recovery, export
+  RedlineOverlay.js     orchestration: lifecycle, selection, commands, pointer input, rendering
+  RedlineOverlayKeys.js   ordered keyboard rules for Annotate mode
+  RedlineOverlayColor.js  colour dialog, opacity and page eyedropper
+  RedlineOverlayCursor.js pointer proxy placement, follow, drag and drawing
+  RedlineOverlayDock.js   toolbar strip pin, position and grip drag
+  RedlineOverlayExport.js JSON, PNG, clipboard, Copy report and export preview
+  RedlineOverlayRecovery.js  reload-recovery check, prompt, restore, discard and autosave
+  RedlineToolDefaults.js  drawing-tool defaults and saved preferences (no DOM)
   RedlineToolbar.js     one full-width strip with commands and contextual controls
   RedlineGestures.js    drawing, moving, resizing, rotating, erasing, path drafts
   RedlineTransform.js   selection handles, rotate knob, rotation-aware resize
@@ -637,7 +644,7 @@ well as resized viewport geometry.
 both `executeScript` and `captureVisibleTab` for that tab. There is no broad
 host permission: the extension can only see a page you explicitly invoke it on.
 The `storage` permission saves tool preferences locally in the extension and
-reload-recovery drafts in its session storage. Phase 3 added no permission:
+reload-recovery drafts in its session storage. Nothing else needs a permission:
 tab events used by the capture checks and draft cleanup need none, and no
 screen sharing is requested for the pointer.
 
@@ -676,13 +683,13 @@ keyboard traversal, and matching drawing/export coordinates.
 
 | # | File | Change | Why |
 | --- | --- | --- | --- |
-| 1 | `RedlineOverlay.js` | colour dialog appends to `options.mount`, not `document.body` | it was escaping the shadow root and losing its styles |
-| 2 | `RedlineOverlay.js` | Tab cycling reads `root.getRootNode().activeElement` | `document.activeElement` is the shadow **host**, so Tab always jumped back to the first button |
+| 1 | `RedlineOverlayColor.js` | colour dialog appends to `options.mount`, not `document.body` | it was escaping the shadow root and losing its styles |
+| 2 | `RedlineOverlayKeys.js` | Tab cycling reads `root.getRootNode().activeElement` | `document.activeElement` is the shadow **host**, so Tab always jumped back to the first button |
 | 3 | `vendor/wb/define-element.js` | skip registration when there is no registry | Chrome gives an isolated world a **null** `customElements`; the import threw and the whole overlay failed to load |
-| 4 | `RedlineOverlay.js` | new `createColorPicker` option | lets a host without a registry supply its own control |
-| 5 | `RedlineOverlay.js` | guard `customElements.whenDefined` | same null registry |
+| 4 | `RedlineOverlay.js`, `RedlineOverlayColor.js` | new `createColorPicker` option | lets a host without a registry supply its own control |
+| 5 | `RedlineOverlayColor.js` | guard `customElements.whenDefined` | same null registry |
 | 6 | `RedlineOverlay.js` | new `describePage` option; the built-in block was hardcoded to `location.href` | a host on arbitrary sites must be able to redact the URL |
-| 7 | `RedlineOverlay.js` | key handler runs inside the mount root and uses `composedPath()[0]` | preserves text editing across shadow boundaries |
+| 7 | `RedlineOverlay.js`, `RedlineOverlayKeys.js` | key handler runs inside the mount root and uses `composedPath()[0]` | preserves text editing across shadow boundaries |
 | 8 | `RedlineOverlay.js` | `preferences` and `savePreferences` host adapters | keeps the reusable runtime out of website storage |
 
 ### Patch 7
@@ -703,7 +710,10 @@ regressions are covered by the suite.
 
 Patches 1, 2, 3, 5, and 7 are latent bugs in the canonical package that only
 appear under shadow DOM or in a content script; they are worth folding back
-upstream.
+upstream. The canonical package keeps everything in one `RedlineOverlay.js`;
+here that class has since been split into the `RedlineOverlay*.js` controllers
+and `RedlineToolDefaults.js`, so a fix carried upstream lands in the matching
+section of the single file.
 
 ## Tests
 
@@ -722,16 +732,18 @@ Individual suites:
 ```bash
 node --test test/*.test.mjs          # model, layout, geometry, style and contrast tests
 node test/run.mjs                    # original real-browser acceptance suite
-node test/phase1-browser.mjs         # workspace, drawing and review-bug regressions
-node test/phase2-browser.mjs         # bullets, label limits, legend and canvas editor (DPR 2 and 1)
-node test/phase3-browser.mjs         # pointer, Copy report, export preview, tab-isolated capture (DPR 2 and 1)
-node test/phase3-recovery-browser.mjs  # reload recovery lifecycle, tabs, quota, complete workflow
-node test/phase3-review-browser.mjs   # lead regressions for closing dialogs and recovery failures
+node test/workspace-browser.mjs       # workspace, drawing and review-bug regressions
+node test/fill-capture-browser.mjs    # fill retention and clean captures
+node test/legend-browser.mjs          # bullets, label limits, legend and canvas editor (DPR 2 and 1)
+node test/legend-long-text-browser.mjs  # long explanations, caret pixels and composition (DPR 1 and 2)
+node test/export-browser.mjs          # pointer, Copy report, export preview, tab-isolated capture (DPR 2 and 1)
+node test/recovery-browser.mjs        # reload recovery lifecycle, tabs, quota, complete workflow
+node test/recovery-failures-browser.mjs  # closing dialogs mid-capture and failed recovery operations
 node test/eyedropper-browser.mjs      # real page-pixel samples, DPR, style ownership and cancellation
 node test/mode-layout-browser.mjs     # classic scrollbar layout and camera-reset regressions
 node test/transform-browser.mjs       # selection handles, rotate knob, rotated resize/export/text (DPR 2)
 node test/fullpage-browser.mjs        # menu-free strip and native-resolution full-page alignment
-pwsh -NoProfile -File test/watch-reload.ps1
+pwsh -NoProfile -File test/watch-reload.test.ps1
 node test/screenshots.mjs            # review captures at 1920, 1200, 800 and 420 px
 ```
 
@@ -744,7 +756,7 @@ pixel alignment after resize, crop and output scaling, JSON round-trips,
 rejected imports, session retention, URL redaction, website storage isolation,
 preference restoration on another origin, and narrow layouts.
 
-The Phase 1 suite runs at DPR 2 and checks, through real pointer and keyboard
+The workspace suite runs at DPR 2 and checks, through real pointer and keyboard
 input: that a page-world observer sees no export link, bytes or payload; that
 text wraps identically in the preview and the PNG (including the `WWW WWW`
 case, blank lines and long words); arrow-key tab and swatch navigation in the
@@ -754,13 +766,13 @@ selection versus default styling with exact undo, redo and import; continuous
 fill and outline opacity plus graduated rendering in preview and PNG; Shift constraints; every end decoration;
 duplicate and nudge history; eraser geometry; and rendered text contrast.
 
-The lead-review suite also checks that hidden fills survive No Fill/No Outline changes,
+The fill and capture suite checks that hidden fills survive No Fill/No Outline changes,
 JSON, reopen and history; selected shapes cannot change remembered drawing
 defaults; status toasts stay out of captured PNGs; and both endpoint selectors
 remain reachable and operable at the supported 1200 px minimum. The text suite checks click-to-type,
 translucent white paper, live expansion, later edits, PNG and JSON at DPR 1 and 2.
 
-The Phase 2 suite runs at DPR 2 and again at DPR 1 and checks, through real
+The legend suite runs at DPR 2 and again at DPR 1 and checks, through real
 pointer and keyboard input: hidden-legend placement without typing; independent
 1–9 and A–Z sequences; reuse of freed labels; exhaustion messages and the
 offered switch; legacy `10`/`AA` notes; immediate typing with the legend shown;
@@ -776,16 +788,16 @@ PNG; nonuniform resize, crop at 200% output and the past-edge warning; Browse
 mode; atomic rejection of bad bullets and legends; legacy JSON; the new controls
 at 1920, 1200, 800 and 420 px; close/reopen; and no page-visible editor nodes or
 payloads. Its click targets come from importing the extension's own layout
-module into the DevTools test world. Screenshots go to `test-artifacts/phase2`.
+module into the DevTools test world. Screenshots go to `test-artifacts/legend`.
 
-The Phase 2 lead-review suite adds real caret-pixel checks for long explanations,
+The long legend text suite adds real caret-pixel checks for long explanations,
 wheel scrolling and pointer placement, hidden-legend cards, nonuniform narrow
 resizing, exact whitespace retention, and composition shortcut protection at
 DPR 1 and 2. It verifies that exporting while the editing view is scrolled
 produces the same PNG as exporting the saved document. Its screenshots are in
-`test-artifacts/phase2-review`.
+`test-artifacts/legend-long-text`.
 
-The Phase 3 suite runs at DPR 2 and DPR 1 through real pointer and keyboard
+The export suite runs at DPR 2 and DPR 1 through real pointer and keyboard
 input: Include cursor off by default; keyboard-only placement at the centre
 with arrows and Enter; hotspot pixels in the PNG; dragging, freezing and
 Follow; that moving the mouse to Copy image and resting there leaves the
@@ -806,7 +818,7 @@ navigation mid-capture (the worker's capture is delayed from the test to make
 these deterministic); a refused preview; supported 1920 and 1200 px layouts of
 the command strip, Pointer row and preview at both ratios; page-world
 observers, page storage, the stored draft's contents and the shipped manifest.
-Screenshots go to `test-artifacts/phase3`.
+Screenshots go to `test-artifacts/export`.
 
 The recovery suite reloads real pages: no offer for an empty session; a session
 built by drawing, typing explanations in both schemes, including the pointer,
@@ -821,7 +833,7 @@ labels, a long explanation edited later in the scrolling card editor, report
 text, JSON reimport and restore; and a pixel-identical PNG after restoring at
 DPR 2.
 
-The Phase 3 lead regressions close Redline with Restore, Preview, the colour
+The recovery failure suite closes Redline with Restore, Preview, the colour
 picker and Clear confirmation open; close and reopen while preview capture is
 pending; keep a cancelled recovery draft unchanged; and inject repeated failed
 discards before retrying successfully. Additional model regressions preserve
@@ -829,7 +841,7 @@ older drafts when a save fails at the count limit or after navigation, reject
 oversized unload saves cleanly, and retry failed removal of an empty session.
 
 The model tests verify that rejected imports preserve dimensions, marks, and
-both history stacks. Phase 3 model tests cover cursor validation, geometry,
+both history stacks. Model tests also cover tool defaults and preferences; cursor validation, geometry,
 hit testing and the pause/press tracker; report text and HTML escaping; the
 draft envelope, prompt wording and autosaver (debounce, maximum wait,
 deduplication, pause, discard ordering against in-flight writes, unload flush,
@@ -852,7 +864,7 @@ Three things the suites do **not** cover, all needing a human:
   headless run cannot tell you which one wins on your machine. Check it after
   installing, and rebind at `chrome://extensions/shortcuts` if it loses.
 - **Clipboard copy.** `navigator.clipboard.write` needs a focused document, and
-  the page's Permissions-Policy can forbid it. The Phase 3 suite reads Copy
+  the page's Permissions-Policy can forbid it. The export suite reads Copy
   image and Copy report back from headless Chromium's clipboard, and exercises a
   blocked page, but headless Chromium keeps its own clipboard: the
   operating-system clipboard was not written or checked, and nothing was pasted

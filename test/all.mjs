@@ -3,9 +3,8 @@
  *
  *   npm test            (or: node test/all.mjs [--headed] [--skip-watcher])
  *
- * Suites: model tests (node:test), the original real-browser acceptance suite,
- * the Phase 1, Phase 2 and Phase 3 real-browser suites, and the mocked
- * reload-watcher tests (PowerShell 7). Browser suites need `npm install` and
+ * Suites: model tests (node:test), the real-browser acceptance suite and the
+ * feature suites beside it, and the mocked reload-watcher tests (PowerShell 7). Browser suites need `npm install` and
  * `npm run setup:browser`.
  */
 import { spawnSync } from 'node:child_process';
@@ -20,23 +19,23 @@ const modelTests = fs.readdirSync(HERE).filter(name => name.endsWith('.test.mjs'
 const suites = [
   ['model', process.execPath, ['--test', ...modelTests]],
   ['browser acceptance', process.execPath, [path.join(HERE, 'run.mjs'), ...passthrough]],
-  ['phase 1 browser', process.execPath, [path.join(HERE, 'phase1-browser.mjs'), ...passthrough]],
-  ['phase 1 lead review', process.execPath, [path.join(HERE, 'phase1-review-browser.mjs'), ...passthrough]],
+  ['workspace and drawing browser', process.execPath, [path.join(HERE, 'workspace-browser.mjs'), ...passthrough]],
+  ['fill retention and clean capture browser', process.execPath, [path.join(HERE, 'fill-capture-browser.mjs'), ...passthrough]],
   ['click-to-type browser', process.execPath, [path.join(HERE, 'text-browser.mjs'), ...passthrough]],
   ['rectangle direct-label browser', process.execPath, [path.join(HERE, 'rectangle-label-browser.mjs'), ...passthrough]],
   ['shape text and direct selection browser', process.execPath, [path.join(HERE, 'shape-edit-browser.mjs'), ...passthrough]],
-  ['phase 2 bullets and legend browser', process.execPath, [path.join(HERE, 'phase2-browser.mjs'), ...passthrough]],
-  ['phase 2 lead review', process.execPath, [path.join(HERE, 'phase2-review-browser.mjs'), ...passthrough]],
-  ['phase 3 pointer, report, preview and capture browser', process.execPath, [path.join(HERE, 'phase3-browser.mjs'), ...passthrough]],
-  ['phase 3 reload recovery browser', process.execPath, [path.join(HERE, 'phase3-recovery-browser.mjs'), ...passthrough]],
-  ['phase 3 lead review', process.execPath, [path.join(HERE, 'phase3-review-browser.mjs'), ...passthrough]],
+  ['bullets and legend browser', process.execPath, [path.join(HERE, 'legend-browser.mjs'), ...passthrough]],
+  ['long legend text browser', process.execPath, [path.join(HERE, 'legend-long-text-browser.mjs'), ...passthrough]],
+  ['pointer, report, preview and capture browser', process.execPath, [path.join(HERE, 'export-browser.mjs'), ...passthrough]],
+  ['reload recovery browser', process.execPath, [path.join(HERE, 'recovery-browser.mjs'), ...passthrough]],
+  ['closing and recovery failure browser', process.execPath, [path.join(HERE, 'recovery-failures-browser.mjs'), ...passthrough]],
   ['page eyedropper browser', process.execPath, [path.join(HERE, 'eyedropper-browser.mjs'), ...passthrough]],
   ['mode layout preservation', process.execPath, [path.join(HERE, 'mode-layout-browser.mjs'), ...passthrough]],
   ['selection handles and rotation browser', process.execPath, [path.join(HERE, 'transform-browser.mjs'), ...passthrough]],
   ['full-page capture and consolidated menu', process.execPath, [path.join(HERE, 'fullpage-browser.mjs'), ...passthrough]],
 ];
 if (!process.argv.includes('--skip-watcher')) {
-  suites.push(['reload watcher (mocked)', 'pwsh', ['-NoProfile', '-File', path.join(HERE, 'watch-reload.ps1')]]);
+  suites.push(['reload watcher (mocked)', 'pwsh', ['-NoProfile', '-File', path.join(HERE, 'watch-reload.test.ps1')]]);
 }
 
 const summary = [];

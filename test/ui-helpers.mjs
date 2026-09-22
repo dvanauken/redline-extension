@@ -1,5 +1,5 @@
 /**
- * Helpers shared by the Phase 3 browser suites: overlay access, real-input
+ * Helpers shared by the browser suites: overlay access, real-input
  * clicks, imports and downloads, PNG sampling, and tab/capture control through
  * the test build's service worker.
  */

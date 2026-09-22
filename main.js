@@ -153,7 +153,46 @@ function tilePositions(total, viewport) {
   return values;
 }
 
-async function captureFullPage(address, interrupted) {
+/** Set `properties` as important inline styles; returns a function that puts the old values back. */
+function overrideStyles(element, properties) {
+  const hadAttribute = element.hasAttribute('style');
+  const saved = Object.keys(properties).map(name => [name, element.style.getPropertyValue(name), element.style.getPropertyPriority(name)]);
+  for (const [name, value] of Object.entries(properties)) element.style.setProperty(name, value, 'important');
+  return () => {
+    for (const [name, value, priority] of saved) {
+      if (value) element.style.setProperty(name, value, priority);
+      else element.style.removeProperty(name);
+    }
+    if (!hadAttribute && !element.style.length) {
+      // Chromium writes inline-style edits back to the attribute lazily; read it
+      // first, or that pending write would put an empty style="" back afterwards.
+      element.getAttribute('style');
+      element.removeAttribute('style');
+    }
+  };
+}
+
+/**
+ * Fixed and sticky elements stay put while the page scrolls, so a stitched
+ * capture would show them in every tile. Sticky elements are laid out where
+ * they sit in the page for the whole capture (`relative` with no offsets keeps
+ * their box and containing block); fixed ones appear in the first tile only.
+ * Elements inside shadow roots are not reached.
+ */
+function pinnedElements(skip) {
+  const fixed = [];
+  const sticky = [];
+  const walker = document.createTreeWalker(document.body ?? document.documentElement, NodeFilter.SHOW_ELEMENT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node === skip) continue;
+    const { position } = getComputedStyle(node);
+    if (position === 'fixed') fixed.push(node);
+    else if (position === 'sticky' || position === '-webkit-sticky') sticky.push(node);
+  }
+  return { fixed, sticky };
+}
+
+async function captureFullPage(address, interrupted, host) {
   const scrolling = document.scrollingElement ?? document.documentElement;
   const width = Math.max(innerWidth, scrolling.scrollWidth, document.body?.scrollWidth ?? 0);
   const height = Math.max(innerHeight, scrolling.scrollHeight, document.body?.scrollHeight ?? 0);
@@ -168,6 +207,11 @@ async function captureFullPage(address, interrupted) {
   const wasLocked = document.body.hasAttribute('data-redline-active');
   if (wasLocked) document.body.removeAttribute('data-redline-active');
   scrolling.style.setProperty('scroll-behavior', 'auto', 'important');
+  const pinned = pinnedElements(host);
+  const restores = pinned.sticky.map(element => overrideStyles(element, {
+    position: 'relative', top: 'auto', right: 'auto', bottom: 'auto', left: 'auto',
+  }));
+  let fixedHidden = false;
   let canvas = null;
   let ctx = null;
   let scaleX = 1;
@@ -175,6 +219,11 @@ async function captureFullPage(address, interrupted) {
   try {
     for (const y of ys) {
       for (const x of xs) {
+        if (canvas && !fixedHidden) {
+          // Opacity, unlike visibility, cannot be undone by a descendant.
+          for (const element of pinned.fixed) restores.push(overrideStyles(element, { opacity: '0', transition: 'none' }));
+          fixedHidden = true;
+        }
         window.scrollTo({ left: x, top: y, behavior: 'instant' });
         await nextPaint();
         if (interrupted()) throw new Error('This tab changed while capturing the full page. Nothing was exported.');
@@ -196,6 +245,7 @@ async function captureFullPage(address, interrupted) {
       }
     }
   } finally {
+    for (const restore of restores.reverse()) restore();
     window.scrollTo({ left: original.x, top: original.y, behavior: 'instant' });
     if (oldBehavior) scrolling.style.setProperty('scroll-behavior', oldBehavior, oldPriority);
     else scrolling.style.removeProperty('scroll-behavior');
@@ -230,7 +280,7 @@ async function capturePage(host, { fullPage = false } = {}) {
       throw new Error('This tab was hidden before capture, so nothing was captured. Try again.');
     }
     const result = fullPage
-      ? await captureFullPage(address, () => interrupted || document.visibilityState !== 'visible' || location.href !== address)
+      ? await captureFullPage(address, () => interrupted || document.visibilityState !== 'visible' || location.href !== address, host)
       : { dataUrl: await requestVisibleCapture(address), scope: 'browser-tab' };
     if (interrupted || document.visibilityState !== 'visible') {
       throw new Error('This tab was switched away from during capture, so the screenshot was discarded. Nothing was exported; try again.');
@@ -306,6 +356,8 @@ function createToast(shadow) {
 }
 
 async function install() {
+  // Frameset and bare XML/SVG documents have no body to host the overlay.
+  if (!(document.body instanceof HTMLBodyElement)) throw new Error('This page has no <body> for Redline to attach to.');
   const host = document.createElement('div');
   host.dataset.redlineExtension = '';
   const shadow = host.attachShadow({ mode: 'closed' });
@@ -325,46 +377,54 @@ async function install() {
 
   document.body.appendChild(host);
 
-  const dialogs = new HostDialogs(shadow);
-  const setStatus = createToast(shadow);
-  let preferences = {};
+  // Nothing is left in the page if the overlay cannot be built.
+  let overlay;
   try {
-    preferences = (await chrome.storage.local.get(PREFERENCES_KEY))[PREFERENCES_KEY] ?? {};
-  } catch (error) {
-    console.warn('[Redline] Could not load preferences.', error);
-  }
+    const dialogs = new HostDialogs(shadow);
+    const setStatus = createToast(shadow);
+    let preferences = {};
+    try {
+      preferences = (await chrome.storage.local.get(PREFERENCES_KEY))[PREFERENCES_KEY] ?? {};
+    } catch (error) {
+      console.warn('[Redline] Could not load preferences.', error);
+    }
 
-  const overlay = new RedlineOverlay({
-    mount: shadow,
-    getContext,
-    describePage,
-    setStatus,
-    capturePage: options => capturePage(host, options),
-    createColorPicker,
-    preferences,
-    savePreferences: value => chrome.storage.local.set({ [PREFERENCES_KEY]: value }),
-    dismissDialogs: () => dialogs.dismissAll(),
-    setPageLocked,
-    requestText: (text, context) => dialogs.requestText(text, context),
-    confirmClear: count => dialogs.confirm({
-      title: 'Clear redline marks?',
-      message: `Remove ${count} mark${count === 1 ? '' : 's'} from this page?`,
-      confirmLabel: 'Clear',
-    }),
-    confirm: options => dialogs.confirm(options),
-    loadDraft: async () => {
-      const response = await draftRequest('load');
-      if (!response.ok) throw new Error(response.error ?? 'Reload recovery is unavailable.');
-      return response.draft ?? null;
-    },
-    saveDraft: draft => {
-      // Recorded when sent, so a navigation while the save is in flight is still noticed.
-      draftAddress = location.href;
-      return draftRequest('save', { draft });
-    },
-    discardDraft: ({ sessionId } = {}) => draftRequest('discard', { sessionId }),
-    requestRecovery: summary => dialogs.recovery(summary),
-  });
+    overlay = new RedlineOverlay({
+      mount: shadow,
+      getContext,
+      describePage,
+      setStatus,
+      capturePage: options => capturePage(host, options),
+      createColorPicker,
+      preferences,
+      savePreferences: value => chrome.storage.local.set({ [PREFERENCES_KEY]: value }),
+      dismissDialogs: () => dialogs.dismissAll(),
+      setPageLocked,
+      requestText: (text, context) => dialogs.requestText(text, context),
+      confirmClear: count => dialogs.confirm({
+        title: 'Clear redline marks?',
+        message: `Remove ${count} mark${count === 1 ? '' : 's'} from this page?`,
+        confirmLabel: 'Clear',
+      }),
+      confirm: options => dialogs.confirm(options),
+      loadDraft: async () => {
+        const response = await draftRequest('load');
+        if (!response.ok) throw new Error(response.error ?? 'Reload recovery is unavailable.');
+        return response.draft ?? null;
+      },
+      saveDraft: draft => {
+        // Recorded when sent, so a navigation while the save is in flight is still noticed.
+        draftAddress = location.href;
+        return draftRequest('save', { draft });
+      },
+      discardDraft: ({ sessionId } = {}) => draftRequest('discard', { sessionId }),
+      requestRecovery: summary => dialogs.recovery(summary),
+    });
+  } catch (error) {
+    host.remove();
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter(sheet => sheet !== pageSheet);
+    throw error;
+  }
 
   // A fragment or history navigation keeps this document (and the marks) but
   // changes the address a reload will use, so save the draft under it.

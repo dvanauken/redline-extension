@@ -12,8 +12,23 @@ const PAGE = `<!doctype html>
 </style>
 <button id="page-button">page control</button>`;
 
+// A fixed header (blue) and a sticky bar (green) that would repeat in every
+// stitched tile if captured as they appear on screen.
+const PINNED = `<!doctype html>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; }
+  body { width: 800px; height: 1600px; background: #ffffff; }
+  #header { position: fixed; top: 0; left: 0; width: 800px; height: 40px; background: #0000ff; }
+  #spacer { height: 600px; }
+  #sticky { position: sticky; top: 64px; height: 30px; background: #00ff00; }
+</style>
+<div id="header" style="z-index: 5"></div>
+<div id="spacer"></div>
+<div id="sticky"></div>`;
+
 const { check, results } = createChecker();
-const { server, origin } = await startServer({ '/full-page': PAGE });
+const { server, origin } = await startServer({ '/full-page': PAGE, '/pinned': PINNED });
   const { context, worker, scratch } = await launch({ viewport: { width: 1200, height: 500 } });
 let access;
 try {
@@ -102,6 +117,42 @@ try {
       && copied.pixel[0] > 180 && copied.pixel[1] < 90 && copied.pixel[2] < 90
       && /800 × 1600 native pixels/.test(copied.status),
     JSON.stringify(copied));
+
+  // Fixed and sticky elements appear once, where the page puts them.
+  await access.dispose();
+  await page.goto(`${origin}/pinned`);
+  await page.evaluate(() => scrollTo(0, 900));
+  access = await openRedline({ context, worker, page });
+  const styleBefore = await page.evaluate(() => [document.getElementById('header'), document.getElementById('sticky')].map(node => [node.hasAttribute('style'), node.style.cssText]));
+  await access.evaluate(() => globalThis.__redlineTestRoot.querySelector('[data-redline-action="fullPage"]').click());
+  await waitUntil(() => access.evaluate(() => !globalThis.__redlineTestRoot.querySelector('[data-redline-root]').hasAttribute('data-busy')),
+    'pinned page copied', 45000);
+  const pinned = await page.evaluate(async () => {
+    const [item] = await navigator.clipboard.read();
+    const bitmap = await createImageBitmap(await item.getType('image/png'));
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+    const at = y => [...ctx.getImageData(400, y, 1, 1).data].slice(0, 3).join(',');
+    // 520 and 1020 are where the header would repeat in the second and third
+    // tiles; 564 and 1064 are where the sticky bar would stick in them.
+    return {
+      height: bitmap.height, top: at(20), second: at(520), third: at(1020),
+      stickyInPlace: at(615), stuckSecond: at(579), stuckThird: at(1079), scrollY,
+      style: [document.getElementById('header'), document.getElementById('sticky')].map(node => [node.hasAttribute('style'), node.style.cssText]),
+    };
+  });
+  check('a fixed header appears once, at the top of a full-page capture',
+    pinned.height === 1600 && pinned.top === '0,0,255' && pinned.second === '255,255,255' && pinned.third === '255,255,255',
+    JSON.stringify(pinned));
+  check('a sticky element is captured where it sits in the page, not repeated where it would stick',
+    pinned.stickyInPlace === '0,255,0' && pinned.stuckSecond === '255,255,255' && pinned.stuckThird === '255,255,255',
+    JSON.stringify(pinned));
+  check('the page gets its own inline styles and scroll position back after capture',
+    JSON.stringify(pinned.style) === JSON.stringify(styleBefore) && pinned.scrollY === 900,
+    JSON.stringify({ before: styleBefore, after: pinned.style, scrollY: pinned.scrollY }));
 } finally {
   await access?.dispose();
   await context.close();

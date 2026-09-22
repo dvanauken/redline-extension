@@ -13,9 +13,10 @@
     "test:model": "node --test test/*.test.mjs",
     "test:browser": "node test/run.mjs",
     "test:fullpage": "node test/fullpage-browser.mjs",
-    "test:phase2": "node test/phase2-browser.mjs",
-    "test:phase3": "node test/phase3-browser.mjs && node test/phase3-recovery-browser.mjs",
-    "test:watcher": "pwsh -NoProfile -File test/watch-reload.ps1",
+    "test:legend": "node test/legend-browser.mjs",
+    "test:export": "node test/export-browser.mjs",
+    "test:recovery": "node test/recovery-browser.mjs",
+    "test:watcher": "pwsh -NoProfile -File test/watch-reload.test.ps1",
     "screenshots": "node test/screenshots.mjs"
   },
   "devDependencies": {

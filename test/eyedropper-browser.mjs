@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createChecker, launch, openRedline, startServer, waitUntil } from './harness.mjs';
-import { helpers, setCaptureDelay } from './phase3-helpers.mjs';
+import { helpers, setCaptureDelay } from './ui-helpers.mjs';
 const { check, results } = createChecker();
 const { server, origin } = await startServer({
   '/colors': '<!doctype html><body style="margin:0;background:#336699;min-height:1600px"><button id="green" style="position:absolute;left:500px;top:300px;width:400px;height:300px;background:#12AB34;border:0" onclick="window.clicked=(window.clicked||0)+1"></button><canvas id="pixels" width="100" height="80" style="position:absolute;left:100px;top:300px"></canvas><script>const c=document.querySelector("canvas").getContext("2d");c.fillStyle="#E47A22";c.fillRect(0,0,100,80);</script></body>',

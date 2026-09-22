@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createChecker, launch, openRedline, startServer, waitUntil } from './harness.mjs';
 const { check, results } = createChecker();
 const { server, origin } = await startServer({ '/review': '<!doctype html><body style="margin:0;background:white">Review</body>' });
-await fs.mkdir('test-artifacts/phase2-review', { recursive: true });
+await fs.mkdir('test-artifacts/legend-long-text', { recursive: true });
 try {
   for (const dpr of [1, 2]) {
     const { context, worker, scratch } = await launch({ viewport: { width: 1000, height: 650 }, deviceScaleFactor: dpr });
@@ -74,7 +74,7 @@ try {
       };
       const tailCaret = await blink();
       check('DPR ' + dpr + ': the caret remains visible after the legend grows past the window', tailCaret.bottom > tailCaret.top && tailCaret.bottom - tailCaret.top < 30 && tailCaret.right - tailCaret.left <= 3 && tailCaret.top >= 100 && tailCaret.bottom < 650, JSON.stringify(tailCaret));
-      await page.screenshot({ path: 'test-artifacts/phase2-review/dpr' + dpr + '-long-edit.png' });
+      await page.screenshot({ path: 'test-artifacts/legend-long-text/dpr' + dpr + '-long-edit.png' });
       // Wheel scrolling must change the visible text without moving the caret.
       await page.mouse.move(720, 420);
       const atTail = await input();
@@ -130,11 +130,11 @@ try {
       await page.keyboard.press('Control+End');
       const narrowCaret = await blink();
       check('DPR ' + dpr + ': the editing viewport follows a narrow nonuniform resize', narrowCaret.bottom > narrowCaret.top && narrowCaret.bottom - narrowCaret.top < 30 && narrowCaret.right - narrowCaret.left <= 3 && narrowCaret.bottom < 600 && narrowCaret.right < 420 && narrowCaret.top > 100, JSON.stringify(narrowCaret));
-      await page.screenshot({ path: 'test-artifacts/phase2-review/dpr' + dpr + '-narrow-card.png' });
+      await page.screenshot({ path: 'test-artifacts/legend-long-text/dpr' + dpr + '-narrow-card.png' });
       await page.keyboard.press('Escape');
       await access.dispose();
     } finally { await context.close(); }
   }
 } finally { await new Promise(resolve => server.close(resolve)); }
-console.log(results.filter(item => item.pass).length + '/' + results.length + ' Phase 2 lead checks passed');
+console.log(results.filter(item => item.pass).length + '/' + results.length + ' long legend text checks passed');
 process.exitCode = results.every(item => item.pass) ? 0 : 1;

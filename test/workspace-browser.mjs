@@ -1,9 +1,9 @@
 /**
- * Phase 1 acceptance: the four reproduced review bugs, the light workspace,
+ * Workspace and drawing: the four reproduced review bugs, the light workspace,
  * style targeting, Fill/Outline dialogs, shapes, line ends, constraints, duplicate,
  * nudge and eraser geometry — all through real pointer and keyboard input.
  *
- *   node test/phase1-browser.mjs [--headed]
+ *   node test/workspace-browser.mjs [--headed]
  */
 import path from 'node:path';
 import fs from 'node:fs/promises';
@@ -757,7 +757,7 @@ try {
   // Import reporting and atomic rejection of new fields
   const importPath = path.join(scratch, 'future.json');
   await fs.writeFile(importPath, JSON.stringify({ format: 'open-redline', version: 1, document: {
-    // Phase 2 made `legend` a supported field; `theme` stands in as the unknown one.
+    // `legend` is a supported field; `theme` stands in as the unknown one.
     width: 1200, height: 800, theme: { dark: true },
     annotations: [{ id: 'future', type: 'rectangle', color: '#000000', start: { x: 10, y: 300 }, end: { x: 90, y: 380 }, shadow: 'soft' }],
   } }));
@@ -829,7 +829,7 @@ try {
   check('phase 1 suite completed without an unhandled error', false, error.message);
   console.error(error);
   if (page) {
-    const file = path.join(scratch, 'phase1-failure.png');
+    const file = path.join(scratch, 'workspace-failure.png');
     await page.screenshot({ path: file }).catch(() => {});
     console.error('Failure screenshot: ' + file);
   }
